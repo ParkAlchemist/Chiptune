@@ -4,14 +4,17 @@ from pathlib import Path
 def get_config():
     return {
         "wavenet_params": {
-            'num_layers': 5,  # Number of residual blocks
-            'in_channels': 1,  # Number of input channels
-            'out_channels': 1,  # Number of output channels
+            'num_layers': 20,  # Number of residual blocks
+            'in_channels': 2,  # Number of input channels
+            'out_channels': 2,  # Number of output channels
             'kernel_size': 2,  # Kernel size for convolutions
-            'latent_dim': 128,  # Latent dimension size for VQVAE
-            'codebook_size': 256,  # Size of the codebook for the quantizer
+            'latent_dim': 256,  # Latent dimension size for VQVAE
+            'codebook_size': 512,  # Size of the codebook for the quantizer
             'commitment_beta': 0.25,
-            'mu': 255
+            'mu': 255,
+            'sample_rate': 16000, # Sample rate of the input audio
+            'tgt_token_rate': 50, # Target number of tokens per second of audio
+            'seq_len': 15 # Length of input sequence in seconds
         },
         "model_params": {
             "convbn_channels": [2, 64, 128, 256],  # Channels for Conv layers in encoder
@@ -32,7 +35,7 @@ def get_config():
             "commitment_beta": 0.25,
         },
         "training_params": {
-            "batch_size": 2,
+            "batch_size": 8,
             "epochs": 20,
             "lr": 1e-3,
             "experiment_name": "runs/tokenizer",
@@ -41,7 +44,6 @@ def get_config():
             "shuffle_dataset": True,
             "validation_split": 0.2,
             "model_folder": "weights",
-            "seq_len": 16000
         }
     }
 

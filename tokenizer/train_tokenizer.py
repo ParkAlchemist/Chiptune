@@ -162,10 +162,10 @@ if __name__ == "__main__":
     appendix = ""
 
     if sys.argv[1].lower() == "orig":
-        dataset = AudioDataset(orig_path, config["training_params"]["seq_len"])
+        dataset = AudioDataset(orig_path, config["wavenet_params"]["seq_len"], config["wavenet_params"]["sample_rate"])
         appendix = "orig"
     elif sys.argv[1].lower() == "chip":
-        dataset = AudioDataset(chip_path, config["training_params"]["seq_len"])
+        dataset = AudioDataset(chip_path, config["wavenet_params"]["seq_len"], config["wavenet_params"]["sample_rate"])
         appendix = "chip"
 
     train_loader, val_loader = get_loaders(dataset,

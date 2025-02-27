@@ -1,6 +1,16 @@
 import torch
 import torch.nn as nn
+import torchaudio
 import torch.utils.checkpoint as checkpoint
+
+
+class AdaptivePooling(nn.Module):
+    def __init__(self, tgt_token_rate, seq_len):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool1d(tgt_token_rate * seq_len)
+
+    def forward(self, x):
+        return self.pool(x)
 
 
 class CausalConv1d(nn.Module):
@@ -35,11 +45,13 @@ class WaveNetEncoder(nn.Module):
     def __init__(self, config):
         super(WaveNetEncoder, self).__init__()
         self.layers = nn.ModuleList()
+        self.pool = AdaptivePooling(config["tgt_token_rate"], config["seq_len"])
         for i in range(config['num_layers']):
             dilation = 2 ** i
             self.layers.append(ResidualBlock(config['in_channels'], config['out_channels'], config['kernel_size'], dilation))
 
     def forward(self, x):
+        x = self.pool(x)
         skip_connections = []
         for layer in self.layers:
             x, skip = layer(x)
@@ -51,6 +63,8 @@ class WaveNetDecoder(nn.Module):
     def __init__(self, config):
         super(WaveNetDecoder, self).__init__()
         self.layers = nn.ModuleList()
+        self.resampler = torchaudio.transforms.Resample(orig_freq=config["tgt_token_rate"],
+                                                        new_freq=config["sample_rate"])
         for i in range(config['num_layers']):
             dilation = 2 ** i
             self.layers.append(ResidualBlock(config['in_channels'], config['out_channels'], config['kernel_size'], dilation))
@@ -60,7 +74,7 @@ class WaveNetDecoder(nn.Module):
         for layer in self.layers:
             x, skip = layer(x)
             skip_connections.append(skip)
-        return sum(skip_connections)
+        return self.resampler(sum(skip_connections))
 
 
 class CheckpointedWaveNetEncoder(WaveNetEncoder):
@@ -89,11 +103,11 @@ def init_weights(m):
 
 
 def get_encoder(config):
-    encoder = CheckpointedWaveNetEncoder(config=config)
+    encoder = WaveNetEncoder(config=config)
     encoder.apply(init_weights)
     return encoder
 
 def get_decoder(config):
-    decoder = CheckpointedWaveNetDecoder(config=config)
+    decoder = WaveNetDecoder(config=config)
     decoder.apply(init_weights)
     return decoder
