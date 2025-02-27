@@ -1,0 +1,5 @@
+torch~=2.6.0+cu118
+torchaudio~=2.6.0+cu118
+einops~=0.8.1
+numpy~=1.26.4
+tqdm~=4.67.1
