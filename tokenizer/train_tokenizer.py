@@ -14,10 +14,10 @@ import sys
 
 from dataset_wave import AudioDataset
 from config import get_config, get_weights_file_path
-from model.vqvae_wavenet import get_model
+from model.vqvae import get_model
 
 
-def calculate_accuracy(pred, tgt, threshold=0.01):
+def calculate_accuracy(pred, tgt, threshold=0.1):
     correct_predictions = (torch.abs(pred - tgt) < threshold).sum().item()
     accuracy = correct_predictions / tgt.numel()
     return accuracy
@@ -46,8 +46,9 @@ def get_loaders(dataset, shuffle_dataset, validation_split, batch_size):
     return train_loader, val_loader
 
 
-def validate(model, dataloader, epoch, criterion, writer):
+def validate(model, dataloader, epoch, writer):
     model.eval()
+    model.quantizer.training = False
     val_loss = 0
     val_acc = 0
     batch_iterator = tqdm(dataloader, desc=f'Validating epoch {epoch + 1:02d}')
@@ -55,7 +56,14 @@ def validate(model, dataloader, epoch, criterion, writer):
         for batch in batch_iterator:
             with autocast(device_type="cuda"):
                 outputs = model(batch)
-                loss = outputs["quantized_losses"]["codebook_loss"] + outputs["quantized_losses"]["commitment_loss"] + criterion(outputs["generated_waveform"], batch)
+                codebook_loss = outputs["quantized_losses"]["codebook_loss"]
+                commitment_loss = outputs["quantized_losses"][
+                    "commitment_loss"]
+                diversity_loss = outputs["quantized_losses"]["diversity_loss"]
+                recon_loss = reconstruction_loss(outputs["generated_image"],
+                                                 batch)
+
+                loss = codebook_loss + commitment_loss + diversity_loss + recon_loss
             val_loss += loss.item()
             accuracy = calculate_accuracy(outputs["generated_image"], batch)
             val_acc += accuracy
@@ -76,9 +84,9 @@ def train(model, train_loader, val_loader, config, appendix):
     writer = SummaryWriter(config["training_params"][
                                "experiment_name"] + "/" + appendix)
 
-    optimizer = optim.Adam(model.parameters(),
+    optimizer = optim.Adagrad(model.parameters(),
                            lr=config['training_params']['lr'])
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     scaler = GradScaler()
 
     initial_epoch = 0
@@ -94,29 +102,41 @@ def train(model, train_loader, val_loader, config, appendix):
         optimizer.load_state_dict(state["optimizer_state_dict"])
         global_step = state["global_step"]
 
-    criterion = nn.MSELoss()
-
     for epoch in range(initial_epoch, config['training_params']['epochs']):
         model.train()
+        model.quantizer.training = True
         total_loss = 0
         total_accuracy = 0
         batch_iterator = tqdm(train_loader, desc=f'Processing epoch {epoch + 1:02d}')
         for batch in batch_iterator:
             torch.cuda.empty_cache()
             optimizer.zero_grad()
-            with autocast(device_type=device.type):
+            with (autocast(device_type=device.type)):
                 outputs = model(batch)
-                loss = outputs["quantized_losses"]["codebook_loss"] + outputs["quantized_losses"]["commitment_loss"] + criterion(outputs["generated_waveform"], batch)
+
+                codebook_loss = outputs["quantized_losses"]["codebook_loss"]
+                commitment_loss = outputs["quantized_losses"]["commitment_loss"]
+                diversity_loss = outputs["quantized_losses"]["diversity_loss"]
+                recon_loss = reconstruction_loss(outputs["generated_image"], batch)
+                perplexity = outputs["quantized_losses"]["perplexity"]
+
+                loss = codebook_loss + commitment_loss + diversity_loss + recon_loss
 
             total_loss += loss.item()
-            accuracy = calculate_accuracy(outputs["generated_waveform"], batch)
+            accuracy = calculate_accuracy(outputs["generated_image"], batch)
             total_accuracy += accuracy
             batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}",
-                                        f"accuracy": f"{accuracy:6.3f}"})
+                                        f"accuracy": f"{accuracy:6.3f}",
+                                        f"perplexity": f"{perplexity:6.3f}"})
 
             # Log the loss
             writer.add_scalar('train_loss', loss.item(), global_step)
+            writer.add_scalar('codebook_loss', codebook_loss, global_step)
+            writer.add_scalar('commitment_loss', commitment_loss, global_step)
+            writer.add_scalar('diversity_loss', diversity_loss, global_step)
+            writer.add_scalar('reconstruction_loss', recon_loss, global_step)
             writer.add_scalar('train_accuracy', accuracy, global_step)
+            writer.add_scalar('perplexity', perplexity, global_step)
             writer.flush()
 
             scaler.scale(loss).backward()
@@ -130,8 +150,9 @@ def train(model, train_loader, val_loader, config, appendix):
         print(f'Epoch {epoch + 1:02d} - Loss: {avg_train_loss:.4f}, Accuracy: {avg_train_accuracy:.4f}')
 
         # Do validation
-        validate(model, val_loader, epoch, criterion, writer)
-        scheduler.step()
+        if (epoch + 1) % 5 == 0:
+            validate(model, val_loader, epoch, writer)
+        #scheduler.step()
 
         # Save model at the end of every epoch
         model_filename = get_weights_file_path(config, f'{epoch + 1:02d}', appendix)
@@ -161,12 +182,34 @@ if __name__ == "__main__":
     dataset = None
     appendix = ""
 
+    for i in range(2):
+        if i == 0:
+            appendix = "orig"
+            dataset = AudioDataset(orig_path,
+                                   config["model_params"]["seq_len"],
+                                   config["model_params"]["sample_rate"])
+        else:
+            appendix = "chip"
+            dataset = AudioDataset(chip_path,
+                                   config["model_params"]["seq_len"],
+                                   config["model_params"]["sample_rate"])
+
+        train_loader, val_loader = get_loaders(dataset,
+                                               config["training_params"][
+                                                   "shuffle_dataset"],
+                                               config["training_params"][
+                                                   "validation_split"],
+                                               config["training_params"][
+                                                   "batch_size"])
+        train(model, train_loader, val_loader, config, appendix)
+    """
     if sys.argv[1].lower() == "orig":
-        dataset = AudioDataset(orig_path, config["wavenet_params"]["seq_len"], config["wavenet_params"]["sample_rate"])
+        dataset = AudioDataset(orig_path, config["model_params"]["seq_len"], config["model_params"]["sample_rate"])
         appendix = "orig"
     elif sys.argv[1].lower() == "chip":
-        dataset = AudioDataset(chip_path, config["wavenet_params"]["seq_len"], config["wavenet_params"]["sample_rate"])
+        dataset = AudioDataset(chip_path, config["model_params"]["seq_len"], config["model_params"]["sample_rate"])
         appendix = "chip"
+    
 
     train_loader, val_loader = get_loaders(dataset,
                                            config["training_params"][
@@ -176,3 +219,4 @@ if __name__ == "__main__":
                                            config["training_params"][
                                                "batch_size"])
     train(model, train_loader, val_loader, config, appendix)
+    """

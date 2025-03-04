@@ -1,24 +1,24 @@
 import torch
 import torch.nn as nn
-from . import encoder
-from . import decoder
-from . import quantizer
+from .resnet_encoder import get_encoder
+from .resnet_decoder import get_decoder
+from .quantizer import get_quantizer
 
 
-class VQVAE(nn.Module):
+class ResNetVQVAE(nn.Module):
     def __init__(self, config):
-        super(VQVAE, self).__init__()
-        self.encoder = encoder.get_encoder(config)
+        super(ResNetVQVAE, self).__init__()
+        self.encoder = get_encoder(config)
         self.pre_quant_conv = nn.Conv2d(
-            config['model_params']['convbn_channels'][-1],
+            config['resnet_params']['num_hiddens'],
             config['model_params']['latent_dim'],
             kernel_size=1)
-        self.quantizer = quantizer.get_quantizer(config)
+        self.quantizer = get_quantizer(config)
         self.post_quant_conv = nn.Conv2d(config['model_params']['latent_dim'],
-                                         config['model_params'][
-                                             'transposebn_channels'][0],
+                                         config['resnet_params'][
+                                             'num_hiddens'],
                                          kernel_size=1)
-        self.decoder = decoder.get_decoder(config)
+        self.decoder = get_decoder(config)
 
     def tokenize(self, x):
         enc = self.encoder(x)
@@ -33,10 +33,10 @@ class VQVAE(nn.Module):
         dec_input = self.post_quant_conv(quant_output)
         out = self.decoder(dec_input)
         return {
-            'generated_image': out.view(x.shape),
+            'generated_image': out,
             'quantized_output': quant_output,
             'quantized_losses': quant_loss,
-            'quantized_indices': quant_idxs.squeeze(1)
+            'quantized_indices': quant_idxs
         }
 
     def decode_from_codebook_indices(self, indices):
@@ -46,7 +46,7 @@ class VQVAE(nn.Module):
 
 
 def get_model(config):
-    model = VQVAE(
+    model = ResNetVQVAE(
         config=config
     )
     return model

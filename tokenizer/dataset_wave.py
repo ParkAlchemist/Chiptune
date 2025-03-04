@@ -1,18 +1,25 @@
+import numpy as np
 import torch
 import torchaudio
 from torch.utils.data import Dataset
 from typing import Any
 import os
 
+
+from feature_extractor import FeatureExtractor
+
+
 class AudioDataset(Dataset):
-    def __init__(self, dir, seq_len, sample_rate=16000, overlap_percentage=0.5) -> None:
+    def __init__(self, dir, seq_len, sample_rate=16000, overlap_percentage=0.5, n_mfcc=13) -> None:
         super().__init__()
         self.file_paths = self.get_all_files(dir)
         self.seq_len = seq_len
         self.sample_rate = sample_rate
+        self.orig_sr = 48000
         self.overlap_percentage = overlap_percentage
         self.segment_info = []
         self.total_segments = 0
+        self.feature_extractor = FeatureExtractor(sample_rate, n_mfcc)
 
         for file in self.file_paths:
             waveform = self.load_audio(file)
@@ -25,11 +32,14 @@ class AudioDataset(Dataset):
         return self.total_segments
 
     def __getitem__(self, index: Any) -> Any:
+        # Fetch audio snippet
         file, snippet_idx = self.segment_info[index]
-        waveform = self.load_audio(file)
-        #waveform_mono = self.stereo_to_mono_convertor(waveform)
-        snippets = self.split_audio_with_overlap(waveform)
-        snippet = snippets[snippet_idx]
+        snippet_length = int(self.seq_len * self.orig_sr)
+        overlap_length = int(snippet_length * self.overlap_percentage)
+        step = snippet_length - overlap_length
+        offset = snippet_idx * step
+
+        snippet = self.load_audio(file, offset, snippet_length)
 
         # Ensure the snippet is the correct length
         if snippet.size(1) < self.seq_len * self.sample_rate:
@@ -39,23 +49,20 @@ class AudioDataset(Dataset):
         elif snippet.size(1) > self.seq_len * self.sample_rate:
             snippet = snippet[:, :self.seq_len]
 
-        return snippet
+        # Extract features
+        features = self.feature_extractor.extract_features(snippet.detach().cpu().numpy())
 
-    def get_all_files(self, directory):
+        return features
+
+    @staticmethod
+    def get_all_files(directory):
         return [os.path.join(directory, f) for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
 
-    def load_audio(self, file_path):
-        waveform, sr = torchaudio.load(file_path)
+    def load_audio(self, file_path, offset=0, n_frames=-1):
+        waveform, sr = torchaudio.load(file_path, frame_offset=offset, num_frames=n_frames)
         if sr != self.sample_rate:
             waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
         return waveform
-
-    def stereo_to_mono_convertor(self, signal):
-        # If there is more than 1 channel in your audio
-        if signal.shape[0] > 1:
-            # Do a mean of all channels and keep it in one channel
-            signal = torch.mean(signal, dim=0, keepdim=True)
-        return signal
 
     def split_audio_with_overlap(self, waveform):
         snippet_length = int(self.sample_rate * self.seq_len)

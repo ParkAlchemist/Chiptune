@@ -30,7 +30,8 @@ class Encoder(nn.Module):
                 nn.Conv2d(config['convbn_channels'][i],
                           config['convbn_channels'][i + 1],
                           kernel_size=config['conv_kernel_size'][i],
-                          stride=config['conv_kernel_strides'][i], padding=1),
+                          stride=config['conv_kernel_strides'][i],
+                          padding=config['conv_kernel_paddings'][i]),
                 nn.BatchNorm2d(config['convbn_channels'][i + 1]),
                 activation_map[config['conv_activation_fn']],
             )
@@ -45,7 +46,10 @@ class Encoder(nn.Module):
                           kernel_size=config['conv_kernel_size'][
                               enc_last_idx - 1],
                           stride=config['conv_kernel_strides'][
-                              enc_last_idx - 1], padding=1),
+                              enc_last_idx - 1],
+                          padding=config['conv_kernel_paddings'][
+                              enc_last_idx - 1]
+                          ),
             )
         )
 

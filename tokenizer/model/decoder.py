@@ -30,7 +30,10 @@ class Decoder(nn.Module):
                                    kernel_size=config['transpose_kernel_size'][
                                        i],
                                    stride=config['transpose_kernel_strides'][
-                                       i], padding=1),
+                                       i],
+                                   padding=config['transpose_kernel_paddings'][
+                                       i],
+                                   output_padding=1),
                 nn.BatchNorm2d(config['transposebn_channels'][i + 1]),
                 activation_map[config['transpose_activation_fn']]
             )
@@ -46,7 +49,10 @@ class Decoder(nn.Module):
                     kernel_size=config['transpose_kernel_size'][
                         dec_last_idx - 1],
                     stride=config['transpose_kernel_strides'][
-                        dec_last_idx - 1], padding=1),
+                        dec_last_idx - 1],
+                    padding=config['transpose_kernel_paddings'][
+                        dec_last_idx - 1],
+                    output_padding=1),
                 nn.Tanh()
             )
         )

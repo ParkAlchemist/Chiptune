@@ -17,26 +17,32 @@ def get_config():
             'seq_len': 15 # Length of input sequence in seconds
         },
         "model_params": {
-            "convbn_channels": [2, 64, 128, 256],  # Channels for Conv layers in encoder
-            "conv_kernel_size": [4, 4, 4],  # Kernel sizes for Conv layers in encoder
-            "conv_kernel_strides": [2, 2, 2],  # Strides for Conv layers in encoder
+            "convbn_channels": [2, 16, 64, 128, 256],  # Channels for Conv layers in encoder
+            "conv_kernel_size": [3, 3, 3, 3],  # Kernel sizes for Conv layers in encoder
+            "conv_kernel_strides": [2, 2, 2, 2],  # Strides for Conv layers in encoder
+            "conv_kernel_paddings": [1, 1, 1, 1], # Padding for Conv layers in encoder
             "conv_activation_fn": "relu",  # Activation function for Conv layers in encoder
-            "convbn_blocks": 3,  # Number of Conv blocks in encoder
+            "convbn_blocks": 4,  # Number of Conv blocks in encoder
 
-            "latent_dim": 128,  # Latent dimension size
+            "latent_dim": 256,  # Latent dimension size
 
-            "transposebn_channels": [256, 128, 64, 2],  # Channels for ConvTranspose layers in decoder
-            "transpose_kernel_size": [4, 4, 4],  # Kernel sizes for ConvTranspose layers in decoder
-            "transpose_kernel_strides": [2, 2, 2],  # Strides for ConvTranspose layers in decoder
+            "transposebn_channels": [256, 128, 64, 16, 2],  # Channels for ConvTranspose layers in decoder
+            "transpose_kernel_size": [3, 3, 3, 2],  # Kernel sizes for ConvTranspose layers in decoder
+            "transpose_kernel_strides": [2, 2, 2, 2],  # Strides for ConvTranspose layers in decoder
+            "transpose_kernel_paddings": [1, 1, 1, (5, 6)], # Padding for ConvTranspose layers in decoder
             "transpose_activation_fn": "relu",  # Activation function for ConvTranspose layers in decoder
-            "transpose_bn_blocks": 3,  # Number of ConvTranspose blocks in decoder
+            "transpose_bn_blocks": 4,  # Number of ConvTranspose blocks in decoder
 
-            "codebook_size": 512,  # Size of the codebook for the quantizer
+            "codebook_size": 32768,  # Size of the codebook for the quantizer
             "commitment_beta": 0.25,
+            'seq_len': 15,  # Length of input sequence in seconds
+            'sample_rate': 16000,
+            'ema_decay': 0.8,
+            'ema_eps': 1e-5
         },
         "training_params": {
             "batch_size": 8,
-            "epochs": 20,
+            "epochs": 30,
             "lr": 1e-3,
             "experiment_name": "runs/tokenizer",
             "preload": None,
@@ -44,6 +50,12 @@ def get_config():
             "shuffle_dataset": True,
             "validation_split": 0.2,
             "model_folder": "weights",
+        },
+        "resnet_params": {
+            "in_channels": 2,
+            "num_hiddens": 64,
+            "num_residual_hiddens": 32,
+            "num_residual_layers": 2
         }
     }
 

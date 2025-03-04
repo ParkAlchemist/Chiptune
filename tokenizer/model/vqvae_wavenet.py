@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from .wavenet import get_encoder, get_decoder
-from .quantizer import get_quantizer
+from .quantizer_wave import get_quantizer
 
 
 def mu_law_compress(audio, mu=255):

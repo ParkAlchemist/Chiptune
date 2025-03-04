@@ -21,8 +21,8 @@ class AudioDataset(Dataset):
         for file in self.file_paths:
             waveform = self.load_audio(file)
             snippets = self.split_audio_with_overlap(waveform)
-            for snippet in snippets:
-                self.segment_info.append((file, snippet))
+            for i in range(len(snippets)):
+                self.segment_info.append((file, i))
                 self.total_segments += 1
 
     def __len__(self):
@@ -30,7 +30,10 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, index: Any) -> Any:
 
-        file, snippet = self.segment_info[index]
+        file, snippet_idx = self.segment_info[index]
+        waveform = self.load_audio(file)
+        snippets = self.split_audio_with_overlap(waveform)
+        snippet = snippets[snippet_idx]
         spectrogram = self.audio_to_spectrogram(snippet)
         return spectrogram
 
