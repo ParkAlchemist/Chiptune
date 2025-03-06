@@ -7,7 +7,7 @@ class ResNetDecoder(nn.Module):
     def __init__(self, config):
         super(ResNetDecoder, self).__init__()
 
-        self._conv_1 = nn.Conv2d(in_channels=config["in_channels"],
+        self._conv_1 = nn.Conv2d(in_channels=config["num_hiddens"],
                                  out_channels=config["num_hiddens"],
                                  kernel_size=3,
                                  stride=1, padding=1)

@@ -1,36 +1,64 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
-class Residual(nn.Module):
-    def __init__(self, in_channels, num_hiddens, num_residual_hiddens):
-        super(Residual, self).__init__()
-        self._block = nn.Sequential(
+class ResidualLayer(nn.Module):
+    """
+    One residual layer inputs:
+    - in_dim : the input dimension
+    - h_dim : the hidden layer dimension
+    - res_h_dim : the hidden dimension of the residual block
+    """
+
+    def __init__(self, in_dim, h_dim, res_h_dim):
+        super(ResidualLayer, self).__init__()
+        self.res_block = nn.Sequential(
             nn.ReLU(True),
-            nn.Conv2d(in_channels=in_channels,
-                      out_channels=num_residual_hiddens,
-                      kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(in_dim, res_h_dim, kernel_size=3,
+                      stride=1, padding=1, bias=False),
             nn.ReLU(True),
-            nn.Conv2d(in_channels=num_residual_hiddens,
-                      out_channels=num_hiddens,
-                      kernel_size=1, stride=1, bias=False)
+            nn.Conv2d(res_h_dim, h_dim, kernel_size=1,
+                      stride=1, bias=False)
         )
 
     def forward(self, x):
-        return x + self._block(x)
+        x = x + self.res_block(x)
+        return x
 
 
 class ResidualStack(nn.Module):
-    def __init__(self, in_channels, num_hiddens, num_residual_layers,
-                 num_residual_hiddens):
+    """
+    A stack of residual layers inputs:
+    - in_dim : the input dimension
+    - h_dim : the hidden layer dimension
+    - res_h_dim : the hidden dimension of the residual block
+    - n_res_layers : number of layers to stack
+    """
+
+    def __init__(self, in_dim, h_dim, res_h_dim, n_res_layers):
         super(ResidualStack, self).__init__()
-        self._num_residual_layers = num_residual_layers
-        self._layers = nn.ModuleList(
-            [Residual(in_channels, num_hiddens, num_residual_hiddens)
-             for _ in range(self._num_residual_layers)])
+        self.n_res_layers = n_res_layers
+        self.stack = nn.ModuleList(
+            [ResidualLayer(in_dim, h_dim, res_h_dim)]*n_res_layers)
 
     def forward(self, x):
-        for i in range(self._num_residual_layers):
-            x = self._layers[i](x)
-        return F.relu(x)
+        for layer in self.stack:
+            x = layer(x)
+        x = F.relu(x)
+        return x
+
+
+if __name__ == "__main__":
+    # random data
+    x = np.random.random_sample((16, 2, 39, 469))
+    x = torch.tensor(x).float()
+    # test Residual Layer
+    res = ResidualLayer(2, 2, 20)
+    res_out = res(x)
+    print('Res Layer out shape:', res_out.shape)
+    # test res stack
+    res_stack = ResidualStack(2, 2, 20, 3)
+    res_stack_out = res_stack(x)
+    print('Res Stack out shape:', res_stack_out.shape)

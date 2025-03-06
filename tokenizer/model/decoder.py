@@ -1,71 +1,62 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from .residual import ResidualStack
 
 
 class Decoder(nn.Module):
-    def __init__(self,
-                 config
-                 ):
+    """
+    This is the p_phi (x|z) network. Given a latent sample z p_phi
+    maps back to the original space z -> x.
+
+    Inputs:
+    - in_dim : the input dimension
+    - h_dim : the hidden layer dimension
+    - res_h_dim : the hidden dimension of the residual block
+    - n_res_layers : number of layers to stack
+
+    """
+
+    def __init__(self, in_dim, h_dim, n_res_layers, res_h_dim):
         super(Decoder, self).__init__()
-        activation_map = {
-            'relu': nn.ReLU(),
-            'leaky': nn.LeakyReLU(),
-            'tanh': nn.Tanh(),
-            'gelu': nn.GELU(),
-            'silu': nn.SiLU()
-        }
+        kernel = 4
+        stride = 2
 
-        self.config = config
-        ##### Validate the configuration for the model is correctly setup #######
-        assert config['transpose_activation_fn'] is None or config[
-            'transpose_activation_fn'] in activation_map
-        self.latent_dim = config['latent_dim']
-        self.device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu')
-
-        self.decoder_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.ConvTranspose2d(config['transposebn_channels'][i],
-                                   config['transposebn_channels'][i + 1],
-                                   kernel_size=config['transpose_kernel_size'][
-                                       i],
-                                   stride=config['transpose_kernel_strides'][
-                                       i],
-                                   padding=config['transpose_kernel_paddings'][
-                                       i],
-                                   output_padding=1),
-                nn.BatchNorm2d(config['transposebn_channels'][i + 1]),
-                activation_map[config['transpose_activation_fn']]
-            )
-            for i in range(config['transpose_bn_blocks'] - 1)
-        ])
-
-        dec_last_idx = config['transpose_bn_blocks']
-        self.decoder_layers.append(
-            nn.Sequential(
-                nn.ConvTranspose2d(
-                    config['transposebn_channels'][dec_last_idx - 1],
-                    config['transposebn_channels'][dec_last_idx],
-                    kernel_size=config['transpose_kernel_size'][
-                        dec_last_idx - 1],
-                    stride=config['transpose_kernel_strides'][
-                        dec_last_idx - 1],
-                    padding=config['transpose_kernel_paddings'][
-                        dec_last_idx - 1],
-                    output_padding=1),
-                nn.Tanh()
-            )
+        self.inverse_conv_stack = nn.Sequential(
+            nn.ConvTranspose2d(
+                in_dim, h_dim, kernel_size=kernel-1, stride=stride-1, padding=1),
+            nn.BatchNorm2d(h_dim),
+            nn.Dropout(p=0.2),
+            ResidualStack(h_dim, h_dim, res_h_dim, n_res_layers),
+            nn.ConvTranspose2d(h_dim, h_dim // 2,
+                               kernel_size=kernel, stride=stride, padding=1),
+            nn.BatchNorm2d(h_dim // 2),
+            nn.Dropout(p=0.2),
+            nn.ReLU(),
+            nn.ConvTranspose2d(h_dim//2, 2, kernel_size=kernel+3,
+                               stride=stride, padding=(1, 2))
         )
 
     def forward(self, x):
-        out = x
-        for idx, layer in enumerate(self.decoder_layers):
-            out = layer(out)
-        return out
+        return self.inverse_conv_stack(x)
 
 
 def get_decoder(config):
     decoder = Decoder(
-        config=config['model_params']
+        in_dim=config["resnet_params"]["h_dim"],
+        h_dim=config["resnet_params"]["h_dim"],
+        n_res_layers=config["resnet_params"]["n_res_layers"],
+        res_h_dim=config["resnet_params"]["res_h_dim"]
     )
     return decoder
+
+
+if __name__ == "__main__":
+    # random data
+    x = np.random.random_sample((16, 128, 9, 117))
+    x = torch.tensor(x).float()
+
+    # test decoder
+    decoder = Decoder(128, 128, 3, 64)
+    decoder_out = decoder(x)
+    print('Decoder out shape:', decoder_out.shape)

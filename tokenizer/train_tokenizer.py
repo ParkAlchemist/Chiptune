@@ -2,6 +2,7 @@ import warnings
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 import torch.optim as optim
@@ -17,7 +18,7 @@ from config import get_config, get_weights_file_path
 from model.vqvae import get_model
 
 
-def calculate_accuracy(pred, tgt, threshold=0.1):
+def calculate_accuracy(pred, tgt, threshold=0.01):
     correct_predictions = (torch.abs(pred - tgt) < threshold).sum().item()
     accuracy = correct_predictions / tgt.numel()
     return accuracy
@@ -60,10 +61,12 @@ def validate(model, dataloader, epoch, writer):
                 commitment_loss = outputs["quantized_losses"][
                     "commitment_loss"]
                 diversity_loss = outputs["quantized_losses"]["diversity_loss"]
+                entropy_loss = outputs["quantized_losses"]["entropy_loss"]
+                ot_loss = outputs["quantized_losses"]["ot_loss"]
                 recon_loss = reconstruction_loss(outputs["generated_image"],
                                                  batch)
 
-                loss = codebook_loss + commitment_loss + diversity_loss + recon_loss
+                loss = codebook_loss + commitment_loss + diversity_loss + recon_loss + entropy_loss + ot_loss
             val_loss += loss.item()
             accuracy = calculate_accuracy(outputs["generated_image"], batch)
             val_acc += accuracy
@@ -84,9 +87,9 @@ def train(model, train_loader, val_loader, config, appendix):
     writer = SummaryWriter(config["training_params"][
                                "experiment_name"] + "/" + appendix)
 
-    optimizer = optim.Adagrad(model.parameters(),
+    optimizer = optim.Adam(model.parameters(),
                            lr=config['training_params']['lr'])
-    #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     scaler = GradScaler()
 
     initial_epoch = 0
@@ -107,6 +110,7 @@ def train(model, train_loader, val_loader, config, appendix):
         model.quantizer.training = True
         total_loss = 0
         total_accuracy = 0
+        total_code_usage = np.array([0] * config["model_params"]["codebook_size"])
         batch_iterator = tqdm(train_loader, desc=f'Processing epoch {epoch + 1:02d}')
         for batch in batch_iterator:
             torch.cuda.empty_cache()
@@ -117,14 +121,19 @@ def train(model, train_loader, val_loader, config, appendix):
                 codebook_loss = outputs["quantized_losses"]["codebook_loss"]
                 commitment_loss = outputs["quantized_losses"]["commitment_loss"]
                 diversity_loss = outputs["quantized_losses"]["diversity_loss"]
+                entropy_loss = outputs["quantized_losses"]["entropy_loss"]
+                ot_loss = outputs["quantized_losses"]["ot_loss"]
                 recon_loss = reconstruction_loss(outputs["generated_image"], batch)
                 perplexity = outputs["quantized_losses"]["perplexity"]
 
-                loss = codebook_loss + commitment_loss + diversity_loss + recon_loss
+                loss = codebook_loss + commitment_loss + diversity_loss + entropy_loss + ot_loss + recon_loss
 
             total_loss += loss.item()
             accuracy = calculate_accuracy(outputs["generated_image"], batch)
             total_accuracy += accuracy
+            code_usage = model.quantizer.code_usage
+            codes_replaced = model.quantizer.num_codes_replaced
+            total_code_usage = np.add(total_code_usage, code_usage)
             batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}",
                                         f"accuracy": f"{accuracy:6.3f}",
                                         f"perplexity": f"{perplexity:6.3f}"})
@@ -134,8 +143,11 @@ def train(model, train_loader, val_loader, config, appendix):
             writer.add_scalar('codebook_loss', codebook_loss, global_step)
             writer.add_scalar('commitment_loss', commitment_loss, global_step)
             writer.add_scalar('diversity_loss', diversity_loss, global_step)
+            writer.add_scalar('entropy_loss', entropy_loss, global_step)
+            writer.add_scalar('ot_loss', ot_loss, global_step)
             writer.add_scalar('reconstruction_loss', recon_loss, global_step)
             writer.add_scalar('train_accuracy', accuracy, global_step)
+            writer.add_scalar('Num of codes replaced', codes_replaced, global_step)
             writer.add_scalar('perplexity', perplexity, global_step)
             writer.flush()
 
@@ -147,12 +159,14 @@ def train(model, train_loader, val_loader, config, appendix):
 
         avg_train_loss = total_loss / len(train_loader)
         avg_train_accuracy = total_accuracy / len(train_loader)
+        # Log code usage
+        writer.add_histogram('Code Usage', total_code_usage, epoch + 1)
         print(f'Epoch {epoch + 1:02d} - Loss: {avg_train_loss:.4f}, Accuracy: {avg_train_accuracy:.4f}')
 
         # Do validation
         if (epoch + 1) % 5 == 0:
             validate(model, val_loader, epoch, writer)
-        #scheduler.step()
+        scheduler.step()
 
         # Save model at the end of every epoch
         model_filename = get_weights_file_path(config, f'{epoch + 1:02d}', appendix)
@@ -164,7 +178,8 @@ def train(model, train_loader, val_loader, config, appendix):
         }, model_filename)
 
 def reconstruction_loss(reconstructed, original):
-    return nn.MSELoss()(reconstructed, original)
+    MSE = F.mse_loss(reconstructed, original, reduction='sum')
+    return MSE
 
 
 if __name__ == "__main__":

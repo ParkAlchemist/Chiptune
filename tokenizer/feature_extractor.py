@@ -38,6 +38,8 @@ class FeatureExtractor:
             standardized_features = self.scaler.fit_transform(features.T).T
             features_list.append(standardized_features)
         combined_features = np.stack(features_list, axis=0)
+        norm = np.linalg.norm(combined_features)
+        combined_features = combined_features / norm
         return combined_features
 
 
@@ -47,7 +49,7 @@ if __name__ == "__main__":
     extractor = FeatureExtractor(sr, 13)
     features = extractor.extract_features(waveform)
     plt.figure(figsize=(20, 8))
-    librosa.display.specshow(features, x_axis="time", sr=sr)
+    librosa.display.specshow(features[0], x_axis="time", sr=sr)
     plt.colorbar(format="%+2f")
     plt.show()
 

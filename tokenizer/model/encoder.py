@@ -1,67 +1,58 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from .residual import ResidualStack
 
 
 class Encoder(nn.Module):
-    def __init__(self,
-                 config
-                 ):
+    def __init__(self, in_dim, h_dim, n_res_layers, res_h_dim):
         super(Encoder, self).__init__()
-        activation_map = {
-            'relu': nn.ReLU(),
-            'leaky': nn.LeakyReLU(),
-            'tanh': nn.Tanh(),
-            'gelu': nn.GELU(),
-            'silu': nn.SiLU()
-        }
 
-        self.config = config
-
-        ##### Validate the configuration for the model is correctly setup #######
-        assert config['conv_activation_fn'] is None or config[
-            'conv_activation_fn'] in activation_map
-        self.latent_dim = config['latent_dim']
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
 
-        # Encoder is just Conv bn activation blocks
-        self.encoder_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(config['convbn_channels'][i],
-                          config['convbn_channels'][i + 1],
-                          kernel_size=config['conv_kernel_size'][i],
-                          stride=config['conv_kernel_strides'][i],
-                          padding=config['conv_kernel_paddings'][i]),
-                nn.BatchNorm2d(config['convbn_channels'][i + 1]),
-                activation_map[config['conv_activation_fn']],
-            )
-            for i in range(config['convbn_blocks'] - 1)
-        ])
+        kernel = 4
+        stride = 2
+        self.conv_stack = nn.Sequential(
+            nn.Conv2d(in_dim, h_dim // 2, kernel_size=kernel,
+                      stride=stride, padding=1),
+            nn.BatchNorm2d(h_dim // 2),
+            nn.Dropout(p=0.2),
+            nn.ReLU(),
+            nn.Conv2d(h_dim // 2, h_dim, kernel_size=kernel,
+                      stride=stride, padding=1),
+            nn.BatchNorm2d(h_dim),
+            nn.Dropout(p=0.2),
+            nn.ReLU(),
+            nn.Conv2d(h_dim, h_dim, kernel_size=kernel - 1,
+                      stride=stride - 1, padding=1),
+            nn.BatchNorm2d(h_dim),
+            nn.Dropout(p=0.2),
+            ResidualStack(
+                h_dim, h_dim, res_h_dim, n_res_layers)
 
-        enc_last_idx = config['convbn_blocks']
-        self.encoder_layers.append(
-            nn.Sequential(
-                nn.Conv2d(config['convbn_channels'][enc_last_idx - 1],
-                          config['convbn_channels'][enc_last_idx],
-                          kernel_size=config['conv_kernel_size'][
-                              enc_last_idx - 1],
-                          stride=config['conv_kernel_strides'][
-                              enc_last_idx - 1],
-                          padding=config['conv_kernel_paddings'][
-                              enc_last_idx - 1]
-                          ),
-            )
         )
 
     def forward(self, x):
-        out = x
-        for layer in self.encoder_layers:
-            out = layer(out)
-        return out
+        return self.conv_stack(x)
 
 
 def get_encoder(config):
     encoder = Encoder(
-        config=config['model_params']
+        in_dim=config["resnet_params"]["in_dim"],
+        h_dim=config["resnet_params"]["h_dim"],
+        n_res_layers=config["resnet_params"]["n_res_layers"],
+        res_h_dim=config["resnet_params"]["res_h_dim"]
     )
     return encoder
+
+
+if __name__ == "__main__":
+    # random data
+    x = np.random.random_sample((16, 2, 39, 469))
+    x = torch.tensor(x).float()
+
+    # test encoder
+    encoder = Encoder(2, 128, 3, 64)
+    encoder_out = encoder(x)
+    print('Encoder out shape:', encoder_out.shape)
