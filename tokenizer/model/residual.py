@@ -4,6 +4,15 @@ import torch.nn.functional as F
 import numpy as np
 
 
+class Snake(nn.Module):
+    def __init__(self, alpha=1.0):
+        super(Snake, self).__init__()
+        self.alpha = alpha
+
+    def forward(self, x):
+        return x + (1 / self.alpha) * torch.sin(self.alpha * x) ** 2
+
+
 class ResidualLayer(nn.Module):
     """
     One residual layer inputs:

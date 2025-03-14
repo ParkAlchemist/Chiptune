@@ -5,11 +5,11 @@ import librosa
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score, ConfusionMatrixDisplay
 from dataset_wave import AudioDataset
 from model.vqvae import get_model
-from config import get_config, get_weights_file_path
+from config import get_config, get_tok_weights_file_path
 
 def load_model(config, epoch, appendix):
     model = get_model(config)
-    model_filename = get_weights_file_path(config, f"{epoch:02d}", appendix)
+    model_filename = get_tok_weights_file_path(config, f"{epoch:02d}", appendix)
     state = torch.load(model_filename)
     model.load_state_dict(state['model_state_dict'])
     model.eval()

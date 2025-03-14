@@ -1,44 +1,38 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from .residual import ResidualStack
+from .residual import ResidualStack, Snake
+
+from memory_profiler import profile
 
 
 class Decoder(nn.Module):
-    """
-    This is the p_phi (x|z) network. Given a latent sample z p_phi
-    maps back to the original space z -> x.
-
-    Inputs:
-    - in_dim : the input dimension
-    - h_dim : the hidden layer dimension
-    - res_h_dim : the hidden dimension of the residual block
-    - n_res_layers : number of layers to stack
-
-    """
-
     def __init__(self, in_dim, h_dim, n_res_layers, res_h_dim):
         super(Decoder, self).__init__()
-        kernel = 4
+        kernel = 3
         stride = 2
 
-        self.inverse_conv_stack = nn.Sequential(
-            nn.ConvTranspose2d(
-                in_dim, h_dim, kernel_size=kernel-1, stride=stride-1, padding=1),
-            nn.BatchNorm2d(h_dim),
-            nn.Dropout(p=0.2),
-            ResidualStack(h_dim, h_dim, res_h_dim, n_res_layers),
-            nn.ConvTranspose2d(h_dim, h_dim // 2,
-                               kernel_size=kernel, stride=stride, padding=1),
-            nn.BatchNorm2d(h_dim // 2),
-            nn.Dropout(p=0.2),
-            nn.ReLU(),
-            nn.ConvTranspose2d(h_dim//2, 2, kernel_size=kernel+3,
-                               stride=stride, padding=(1, 2))
-        )
+        self.deconv1 = nn.ConvTranspose2d(in_dim, h_dim, kernel_size=kernel, stride=stride, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(h_dim, h_dim // 2, kernel_size=kernel+1, stride=stride, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(h_dim // 2, 2, kernel_size=kernel, stride=stride, padding=(0, 0))
+        self.layer_norm1 = nn.LayerNorm([h_dim, 9, 117])
+        self.layer_norm3 = nn.LayerNorm([h_dim // 2, 18, 234])
+        self.snake = Snake()
+        self.drop_out = nn.Dropout(p=0.05)
+        self.res_stack = ResidualStack(in_dim, h_dim, res_h_dim, n_res_layers)
 
     def forward(self, x):
-        return self.inverse_conv_stack(x)
+        x = self.deconv1(x)
+        x = self.snake(x)
+        x = self.layer_norm1(x)
+        x = self.drop_out(x)
+        x = self.res_stack(x)
+        x = self.deconv2(x)
+        x = self.snake(x)
+        x = self.layer_norm3(x)
+        x = self.drop_out(x)
+        x = self.deconv3(x)
+        return x
 
 
 def get_decoder(config):
@@ -53,7 +47,7 @@ def get_decoder(config):
 
 if __name__ == "__main__":
     # random data
-    x = np.random.random_sample((16, 128, 9, 117))
+    x = np.random.random_sample((16, 128, 5, 59))
     x = torch.tensor(x).float()
 
     # test decoder

@@ -3,6 +3,9 @@ import torch.nn as nn
 from . import encoder
 from . import decoder
 from . import quantizer
+from . import residual_quantizer
+
+from memory_profiler import profile
 
 
 class VQVAE(nn.Module):
@@ -34,12 +37,7 @@ class VQVAE(nn.Module):
         quant_output, quant_loss, quant_idxs = self.quantizer(quant_input)
         dec_input = self.post_quant_conv(quant_output)
         out = self.decoder(dec_input)
-        return {
-            'generated_image': out,
-            'quantized_output': quant_output,
-            'quantized_losses': quant_loss,
-            'quantized_indices': quant_idxs.squeeze(1)
-        }
+        return out, quant_output, quant_loss, quant_idxs
 
     def decode_from_codebook_indices(self, indices):
         quantized_output = self.quantizer.quantize_indices(indices)
