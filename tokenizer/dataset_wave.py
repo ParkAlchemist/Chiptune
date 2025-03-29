@@ -1,8 +1,6 @@
 import numpy as np
 import torch
 import torchaudio
-import librosa
-from pyexpat import features
 from torch.utils.data import Dataset
 from typing import Any
 import os
@@ -24,7 +22,7 @@ class AudioDataset(Dataset):
         self.overlap_percentage = overlap_percentage
         self.segment_info = np.empty([1, 3])
         self.total_segments = 0
-        self.n_augment_methods = 0
+        self.n_augment_methods = 2
         self.time_stretch = torchaudio.transforms.TimeStretch()
         self.time_mask = torchaudio.transforms.TimeMasking(time_mask_param=50)
         self.frequency_mask = torchaudio.transforms.FrequencyMasking(freq_mask_param=50)
@@ -70,7 +68,7 @@ class AudioDataset(Dataset):
             padding = torch.zeros(snippet.shape[0], pad_length)
             snippet = torch.cat((snippet, padding), dim=1)
         elif snippet.shape[1] > self.seq_len * self.sample_rate:
-            snippet = snippet[:, :self.seq_len]
+            snippet = snippet[:, :self.seq_len * self.sample_rate]
 
         # Extract features
         features = np.array(self.feature_extractor.extract_features(snippet.detach().numpy()))
@@ -107,17 +105,17 @@ class AudioDataset(Dataset):
             return waveform
 
         elif aug_idx == 2:
+            # Add noise
+            noise = torch.randn(waveform.size()) * 0.005
+            waveform = waveform + noise
+            return waveform
+
+        elif aug_idx == 3:
             # Pitch shift
             n_steps = random.choice([-2, 2])
             waveform = torchaudio.functional.pitch_shift(waveform=waveform,
                                                          sample_rate=self.sample_rate,
                                                          n_steps=n_steps)
-            return waveform
-
-        elif aug_idx == 3:
-            # Add noise
-            noise = torch.randn(waveform.size()) * 0.005
-            waveform = waveform + noise
             return waveform
 
         elif aug_idx == 4:
@@ -144,7 +142,7 @@ if __name__ == "__main__":
     info_file_path = f"{dir}/dataset_info_{appendix}.txt"
 
     dataset = AudioDataset(dir=dir, seq_len=15,
-                           path_to_info_file=info_file_path, features_to_extract=[Feature.MFCC])
+                           path_to_info_file=info_file_path, features_to_extract=[Feature.MEL_SPECTROGRAM])
     print(dataset.total_segments)
     start = timeit.default_timer()
     features = dataset.__getitem__(0)

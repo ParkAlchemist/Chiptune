@@ -31,10 +31,7 @@ class Quantizer(nn.Module):
             torch.tensor(hadamard(self.latent_dim), dtype=torch.float32))
 
         # Track code usage
-        self.code_usage_threshold = 256
-        self.num_codes_replaced = 0
-        self.code_usage = torch.full(size=(self.codebook_size,),
-                                     fill_value=self.code_usage_threshold).to(self.device)
+        self.dead_code_threshold = 0.05
         self.rho = 0.1
 
     def initialize_codebook(self, encoder, data_loader):
@@ -112,16 +109,8 @@ class Quantizer(nn.Module):
             self.ema_w = self.ema_w * self.decay + (1 - self.decay) * dw
             self.embedding.weight.data = self.ema_w / self.ema_cluster_size.unsqueeze(1)
 
-            # Update code usage
-            encoding_mask = torch.zeros(self.codebook_size,
-                                        device=self.device).to(self.device)
-            encoding_mask.scatter_(0, encoding_indices.squeeze(), 1)
-            self.code_usage = torch.where(encoding_mask == 1,
-                                          self.code_usage_threshold,
-                                          self.code_usage - 1)
-
             # Replace inactive codes
-            self.replace(x_rotated)
+            self.replace()
 
         # Straight-through estimator
         quant_out = x + (quant_out - x).detach()
@@ -129,17 +118,16 @@ class Quantizer(nn.Module):
         return quant_out, loss, encoding_indices
 
 
-    def replace(self, x):
+    def replace(self):
 
-        inactive_codes = torch.where(self.code_usage <= 0)[0]
+        inactive_codes = torch.where(self.ema_cluster_size < self.dead_code_threshold)[0]
         if inactive_codes.numel() > 0:
-            mean = torch.mean(x, dim=0)
-            noise = torch.rand_like(mean) * self.rho
-            self.embedding.weight.data[inactive_codes] = (mean + noise).detach().to(self.device)
-            self.ema_w.data[inactive_codes] = (mean + noise).detach().to(self.device)
+            active_codes = torch.where(self.ema_cluster_size >= self.dead_code_threshold)[0]
+            new_codes = self.embedding.weight.data[active_codes].mean(dim=0, keepdim=True)
+            noise = torch.rand_like(new_codes) * self.rho
+            self.embedding.weight.data[inactive_codes] = new_codes + noise
+            self.ema_w[inactive_codes] = new_codes + noise
             self.ema_cluster_size[inactive_codes] = 1.0
-            self.num_codes_replaced += inactive_codes.numel()
-            self.code_usage[inactive_codes] = self.code_usage_threshold
 
 
     def quantize_indices(self, indices):

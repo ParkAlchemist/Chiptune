@@ -25,7 +25,7 @@ class Feature(Enum):
     ZCR = 16
 
 
-def calculate_accuracy(pred, tgt, threshold=0.001):
+def calculate_accuracy(pred, tgt, threshold=0.01):
     correct_predictions = (torch.abs(pred - tgt) < threshold).sum().item()
     accuracy = correct_predictions / tgt.numel()
     return accuracy

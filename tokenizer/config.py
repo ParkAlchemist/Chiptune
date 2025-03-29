@@ -1,6 +1,8 @@
 from pathlib import Path
 from utils import Feature
 
+feature_set1 = [Feature.MFCC, Feature.CHROMA, Feature.SPECTRAL_CENTROID, Feature.SPECTRAL_ROLLOFF, Feature.RMS, Feature.ZCR]
+
 
 def get_config():
     return {
@@ -22,19 +24,19 @@ def get_config():
             "codebook_size": 512,  # Size of the codebook for the quantizer
             "num_codebooks": 4,
             "temperature": 1.0,
-            "temperature_decay": 0.999,
+            "temperature_decay": 0.99999,
             "codebook_dropout_prob": 0.01,
             "commitment_beta": 0.25,
             'seq_len': 15,  # Length of input sequence in seconds
-            'sample_rate': 16000,
+            'sample_rate': 22050,
             'ema_decay': 0.99,
             'ema_eps': 1e-8
         },
         "training_params": {
-            "batch_size": 8,
+            "batch_size": 1,
             "epochs_tok": 20,
             "epochs_enc": 10,
-            "lr": 1e-3,
+            "lr": 1e-4,
             "experiment_name_tok": "runs/tokenizer",
             "experiment_name_enc": "runs/encoder",
             "preload": None,
@@ -45,10 +47,7 @@ def get_config():
             "shuffle_dataset": True,
             "validation_split": 0.2,
             "model_folder": "weights",
-            "features_to_extract": [Feature.MFCC, Feature.CHROMA,
-                                    Feature.SPECTRAL_CENTROID, Feature.SPECTRAL_CONTRAST,
-                                    Feature.SPECTRAL_FLATNESS, Feature.SPECTRAL_ROLLOFF,
-                                    Feature.ZCR, Feature.ONSET]
+            "features_to_extract": [Feature.MEL_SPECTROGRAM]
         },
         "resnet_params": {
             "in_dim": 128,

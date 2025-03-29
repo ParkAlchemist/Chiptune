@@ -9,24 +9,24 @@ from memory_profiler import profile
 class Decoder(nn.Module):
     def __init__(self, in_dim, h_dim, n_res_layers, res_h_dim):
         super(Decoder, self).__init__()
-        kernel = 3
+        kernel = 4
         stride = 2
 
-        self.deconv1 = nn.ConvTranspose2d(in_dim, h_dim, kernel_size=kernel, stride=stride, padding=1)
-        self.deconv2 = nn.ConvTranspose2d(h_dim, h_dim // 2, kernel_size=kernel+1, stride=stride, padding=1)
-        self.deconv3 = nn.ConvTranspose2d(h_dim // 2, 2, kernel_size=kernel, stride=stride, padding=(0, 0))
-        self.layer_norm1 = nn.LayerNorm([h_dim, 9, 117])
-        self.layer_norm3 = nn.LayerNorm([h_dim // 2, 18, 234])
+        self.deconv1 = nn.ConvTranspose2d(h_dim, h_dim // 2, kernel_size=kernel, stride=stride, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(h_dim // 2, h_dim // 4, kernel_size=kernel, stride=stride, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(h_dim // 4, 2, kernel_size=kernel+5, stride=stride, padding=1)
+        self.layer_norm1 = nn.LayerNorm([h_dim // 2, 6, 116])
+        self.layer_norm3 = nn.LayerNorm([h_dim // 4, 12, 232])
         self.snake = Snake()
         self.drop_out = nn.Dropout(p=0.05)
         self.res_stack = ResidualStack(in_dim, h_dim, res_h_dim, n_res_layers)
 
     def forward(self, x):
+        x = self.res_stack(x)
         x = self.deconv1(x)
         x = self.snake(x)
         x = self.layer_norm1(x)
         x = self.drop_out(x)
-        x = self.res_stack(x)
         x = self.deconv2(x)
         x = self.snake(x)
         x = self.layer_norm3(x)
@@ -47,7 +47,7 @@ def get_decoder(config):
 
 if __name__ == "__main__":
     # random data
-    x = np.random.random_sample((16, 128, 5, 59))
+    x = np.random.random_sample((16, 128, 3, 58))
     x = torch.tensor(x).float()
 
     # test decoder

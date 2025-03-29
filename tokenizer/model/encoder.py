@@ -8,13 +8,13 @@ class Encoder(nn.Module):
     def __init__(self, in_dim, h_dim, n_res_layers, res_h_dim):
         super(Encoder, self).__init__()
 
-        kernel = 3
+        kernel = 4
         stride = 2
         self.conv1 = nn.Conv2d(2, h_dim // 4, kernel_size=kernel, stride=stride, padding=1)
         self.conv2 = nn.Conv2d(h_dim // 4, h_dim // 2, kernel_size=kernel, stride=stride, padding=1)
         self.conv3 = nn.Conv2d(h_dim // 2, h_dim, kernel_size=kernel, stride=stride, padding=1)
-        self.layer_norm1 = nn.LayerNorm([h_dim // 4, 19, 235])
-        self.layer_norm3 = nn.LayerNorm([h_dim, 5, 59])
+        self.layer_norm1 = nn.LayerNorm([h_dim // 4, 14, 234])
+        self.layer_norm3 = nn.LayerNorm([h_dim, 3, 58])
         self.drop_out = nn.Dropout(p=0.05)
         self.snake = Snake()
         self.res_stack = ResidualStack(in_dim, h_dim, res_h_dim, n_res_layers)
@@ -45,7 +45,7 @@ def get_encoder(config):
 
 if __name__ == "__main__":
     # random data
-    x = np.random.random_sample((16, 2, 37, 469))
+    x = np.random.random_sample((16, 2, 29, 469))
     x = torch.tensor(x).float()
 
     # test encoder
