@@ -172,3 +172,20 @@ cython_debug/
 .pypirc
 
 /dataset
+# External/local data
+data/
+*.pt
+*.pth
+*.ckpt
+
+# Local env files
+.env
+.env.*
+
+# Generated CQT cache
+cache/
+cqt_cache/
+
+# Logs
+runs/
+wandb/
