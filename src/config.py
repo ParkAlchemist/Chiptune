@@ -14,7 +14,7 @@ class CQTConfig:
     sample_rate: int = 22050
     duration: float = 4.0
     hop_length: int = 512
-    n_bins: int = 84
+    n_bins: int = 96
     bins_per_octave: int = 12
     fmin: float | None = None
 
