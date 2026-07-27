@@ -20,6 +20,7 @@ from src.training.cyclegan_step import (
     CycleGANOptimizers,
     cyclegan_train_step,
 )
+from src.training.replay_buffer import ReplayBuffer
 
 
 def clone_first_parameter(model: torch.nn.Module) -> torch.Tensor:
@@ -116,6 +117,10 @@ def test_one_cyclegan_training_step_cpu():
         loss_bundle=loss_bundle,
         device=device,
         grad_clip_norm=5.0,
+        fake_x_buffer=ReplayBuffer(max_size=5),
+        fake_y_buffer=ReplayBuffer(max_size=5),
+        use_amp=False,
+        scaler=None,
     )
 
     assert losses["loss_g_total"] > 0

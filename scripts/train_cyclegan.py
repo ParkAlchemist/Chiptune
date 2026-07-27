@@ -6,6 +6,7 @@ import argparse
 import json
 import time
 from dataclasses import asdict, dataclass
+from contextlib import nullcontext
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,8 @@ from src.training.cyclegan_step import (
     CycleGANOptimizers,
     cyclegan_train_step,
 )
+
+from src.training.replay_buffer import ReplayBuffer
 
 
 @dataclass
@@ -77,6 +80,9 @@ class TrainRunConfig:
     split_seed: int = 1337
     validate_every_epochs: int = 1
     val_batches: int = 20
+
+    replay_buffer_size: int = 50
+    replay_buffer_prob: float = 0.5
 
 
 def set_seed(seed: int) -> None:
@@ -135,6 +141,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validate-every-epochs", type=int, default=1)
     parser.add_argument("--val-batches", type=int, default=20)
 
+    parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--replay-buffer-size", type=int, default=50)
+    parser.add_argument("--replay-buffer-prob", type=float, default=0.5)
+    parser.add_argument("--snippet-seconds", type=float, default=4.0)
+    parser.add_argument("--grad-clip-norm", type=float, default=5.0)
+
     return parser.parse_args()
 
 
@@ -161,6 +173,11 @@ def make_run_config(args: argparse.Namespace) -> TrainRunConfig:
         split_seed=args.split_seed,
         validate_every_epochs=args.validate_every_epochs,
         val_batches=args.val_batches,
+        snippet_seconds=args.snippet_seconds,
+        grad_clip_norm=args.grad_clip_norm,
+        amp=args.amp,
+        replay_buffer_size=args.replay_buffer_size,
+        replay_buffer_prob=args.replay_buffer_prob,
     )
 
 
@@ -181,6 +198,7 @@ def save_checkpoint(
     generator_config: GeneratorConfig,
     discriminator_config: DiscriminatorConfig,
     loss_config: CycleGANLossConfig,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +219,7 @@ def save_checkpoint(
         "generator_config": asdict(generator_config),
         "discriminator_config": asdict(discriminator_config),
         "loss_config": asdict(loss_config),
+        "scaler": scaler.state_dict() if scaler is not None else None,
     }
 
     torch.save(payload, path)
@@ -211,6 +230,7 @@ def load_checkpoint(
     models: CycleGANModels,
     optimizers: CycleGANOptimizers,
     device: torch.device,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> tuple[int, int]:
     checkpoint = torch.load(path, map_location=device)
 
@@ -222,6 +242,9 @@ def load_checkpoint(
     optimizers.g.load_state_dict(checkpoint["opt_g"])
     optimizers.d_x.load_state_dict(checkpoint["opt_d_x"])
     optimizers.d_y.load_state_dict(checkpoint["opt_d_y"])
+
+    if scaler is not None and checkpoint.get("scaler") is not None:
+        scaler.load_state_dict(checkpoint["scaler"])
 
     start_epoch = int(checkpoint["epoch"]) + 1
     global_step = int(checkpoint["global_step"])
@@ -241,6 +264,7 @@ def run_validation(
     loss_bundle,
     device: torch.device,
     max_batches: int = 20,
+    use_amp: bool = False,
 ) -> dict[str, float]:
     from src.losses.cyclegan_losses import (
         compute_generator_losses,
@@ -258,6 +282,13 @@ def run_validation(
     totals: dict[str, float] = {}
     count = 0
 
+    amp_enabled = bool(use_amp and device.type == "cuda")
+    autocast_ctx = (
+        torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+        if amp_enabled
+        else nullcontext()
+    )
+
     for batch_idx, batch in enumerate(val_loader):
         if batch_idx >= max_batches:
             break
@@ -265,68 +296,69 @@ def run_validation(
         real_x = batch["real_x"].to(device, non_blocking=True)
         real_y = batch["real_y"].to(device, non_blocking=True)
 
-        fake_y = models.g_x_to_y(real_x)
-        fake_x = models.g_y_to_x(real_y)
+        with autocast_ctx:
+            fake_y = models.g_x_to_y(real_x)
+            fake_x = models.g_y_to_x(real_y)
 
-        noisy_fake_y = inject_gaussian_noise(
-            fake_y,
-            std=cfg.cycle_noise_std,
-            enabled=False,
-        )
-        noisy_fake_x = inject_gaussian_noise(
-            fake_x,
-            std=cfg.cycle_noise_std,
-            enabled=False,
-        )
+            noisy_fake_y = inject_gaussian_noise(
+                fake_y,
+                std=cfg.cycle_noise_std,
+                enabled=False,
+            )
+            noisy_fake_x = inject_gaussian_noise(
+                fake_x,
+                std=cfg.cycle_noise_std,
+                enabled=False,
+            )
 
-        rec_x = models.g_y_to_x(noisy_fake_y)
-        rec_y = models.g_x_to_y(noisy_fake_x)
+            rec_x = models.g_y_to_x(noisy_fake_y)
+            rec_y = models.g_x_to_y(noisy_fake_x)
 
-        id_x = models.g_y_to_x(real_x)
-        id_y = models.g_x_to_y(real_y)
+            id_x = models.g_y_to_x(real_x)
+            id_y = models.g_x_to_y(real_y)
 
-        pred_fake_y_for_g = models.d_y(fake_y)
-        pred_fake_x_for_g = models.d_x(fake_x)
+            pred_fake_y_for_g = models.d_y(fake_y)
+            pred_fake_x_for_g = models.d_x(fake_x)
 
-        g_losses = compute_generator_losses(
-            real_x=real_x,
-            real_y=real_y,
-            fake_y=fake_y,
-            fake_x=fake_x,
-            rec_x=rec_x,
-            rec_y=rec_y,
-            id_x=id_x,
-            id_y=id_y,
-            pred_fake_y=pred_fake_y_for_g,
-            pred_fake_x=pred_fake_x_for_g,
-            bundle=loss_bundle,
-        )
+            g_losses = compute_generator_losses(
+                real_x=real_x,
+                real_y=real_y,
+                fake_y=fake_y,
+                fake_x=fake_x,
+                rec_x=rec_x,
+                rec_y=rec_y,
+                id_x=id_x,
+                id_y=id_y,
+                pred_fake_y=pred_fake_y_for_g,
+                pred_fake_x=pred_fake_x_for_g,
+                bundle=loss_bundle,
+            )
 
-        d_x_losses = compute_discriminator_loss(
-            pred_real=models.d_x(real_x),
-            pred_fake_detached=models.d_x(fake_x.detach()),
-            bundle=loss_bundle,
-        )
+            d_x_losses = compute_discriminator_loss(
+                pred_real=models.d_x(real_x),
+                pred_fake_detached=models.d_x(fake_x.detach()),
+                bundle=loss_bundle,
+            )
 
-        d_y_losses = compute_discriminator_loss(
-            pred_real=models.d_y(real_y),
-            pred_fake_detached=models.d_y(fake_y.detach()),
-            bundle=loss_bundle,
-        )
+            d_y_losses = compute_discriminator_loss(
+                pred_real=models.d_y(real_y),
+                pred_fake_detached=models.d_y(fake_y.detach()),
+                bundle=loss_bundle,
+            )
 
-        values = {
-            "val_loss_g_total": g_losses.total,
-            "val_loss_g_cycle_x": g_losses.cycle_x,
-            "val_loss_g_cycle_y": g_losses.cycle_y,
-            "val_loss_g_chroma": g_losses.chroma,
-            "val_loss_d_x_total": d_x_losses.total,
-            "val_loss_d_y_total": d_y_losses.total,
-        }
+            values = {
+                "val_loss_g_total": g_losses.total,
+                "val_loss_g_cycle_x": g_losses.cycle_x,
+                "val_loss_g_cycle_y": g_losses.cycle_y,
+                "val_loss_g_chroma": g_losses.chroma,
+                "val_loss_d_x_total": d_x_losses.total,
+                "val_loss_d_y_total": d_y_losses.total,
+            }
 
-        for key, value in values.items():
-            totals[key] = totals.get(key, 0.0) + float(value.detach().cpu().item())
+            for key, value in values.items():
+                totals[key] = totals.get(key, 0.0) + float(value.detach().cpu().item())
 
-        count += 1
+            count += 1
 
     if count == 0:
         return {}
@@ -481,6 +513,18 @@ def main() -> None:
 
     loss_bundle = build_cyclegan_loss_bundle(loss_cfg)
 
+    scaler = torch.amp.GradScaler("cuda",
+                                  enabled=(train_cfg.amp and device.type == "cuda"))
+
+    fake_x_buffer = ReplayBuffer(
+        max_size=train_cfg.replay_buffer_size,
+        return_old_probability=train_cfg.replay_buffer_prob,
+    )
+    fake_y_buffer = ReplayBuffer(
+        max_size=train_cfg.replay_buffer_size,
+        return_old_probability=train_cfg.replay_buffer_prob,
+    )
+
     start_epoch = 0
     global_step = 0
 
@@ -491,6 +535,7 @@ def main() -> None:
             models=models,
             optimizers=optimizers,
             device=device,
+            scaler=scaler,
         )
         print(f"Resumed at epoch={start_epoch}, global_step={global_step}")
 
@@ -536,6 +581,10 @@ def main() -> None:
                 loss_bundle=loss_bundle,
                 device=device,
                 grad_clip_norm=train_cfg.grad_clip_norm,
+                use_amp=train_cfg.amp,
+                scaler=scaler,
+                fake_x_buffer=fake_x_buffer,
+                fake_y_buffer=fake_y_buffer,
             )
 
             global_step += 1
@@ -567,6 +616,7 @@ def main() -> None:
                     generator_config=generator_cfg,
                     discriminator_config=discriminator_cfg,
                     loss_config=loss_cfg,
+                    scaler=scaler,
                 )
 
         epoch_seconds = time.time() - epoch_start
@@ -589,6 +639,7 @@ def main() -> None:
             generator_config=generator_cfg,
             discriminator_config=discriminator_cfg,
             loss_config=loss_cfg,
+            scaler=scaler,
         )
 
         if (epoch + 1) % train_cfg.save_every_epochs == 0:
@@ -602,6 +653,7 @@ def main() -> None:
                 generator_config=generator_cfg,
                 discriminator_config=discriminator_cfg,
                 loss_config=loss_cfg,
+                scaler=scaler,
             )
 
         if (epoch + 1) % train_cfg.validate_every_epochs == 0:
@@ -611,6 +663,7 @@ def main() -> None:
                 loss_bundle=loss_bundle,
                 device=device,
                 max_batches=train_cfg.val_batches,
+                use_amp=train_cfg.amp,
             )
 
             if val_losses:

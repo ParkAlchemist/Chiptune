@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from contextlib import nullcontext
+from src.training.replay_buffer import ReplayBuffer
 
 import torch
 import torch.nn as nn
@@ -53,6 +55,10 @@ def cyclegan_train_step(
     loss_bundle: CycleGANLossBundle,
     device: torch.device,
     grad_clip_norm: float | None = None,
+    use_amp: bool = False,
+    scaler: torch.amp.GradScaler | None = None,
+    fake_x_buffer: ReplayBuffer | None = None,
+    fake_y_buffer: ReplayBuffer | None = None,
 ) -> dict[str, float]:
     """
     One full CycleGAN optimization step.
@@ -77,6 +83,17 @@ def cyclegan_train_step(
 
     cfg = loss_bundle.config
 
+    amp_enabled = bool(use_amp and device.type == "cuda")
+
+    if scaler is None and amp_enabled:
+        raise ValueError("AMP is enabled but scaler is None.")
+
+    autocast_ctx = (
+        torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+        if amp_enabled
+        else nullcontext()
+    )
+
     # ------------------------------------------------------------
     # 1. Train generators
     # ------------------------------------------------------------
@@ -85,52 +102,77 @@ def cyclegan_train_step(
 
     optimizers.g.zero_grad(set_to_none=True)
 
-    fake_y = g_x_to_y(real_x)
-    fake_x = g_y_to_x(real_y)
+    with autocast_ctx:
+        fake_y = g_x_to_y(real_x)
+        fake_x = g_y_to_x(real_y)
 
-    noisy_fake_y = inject_gaussian_noise(
-        fake_y,
-        std=cfg.cycle_noise_std,
-        enabled=cfg.cycle_noise_enabled,
-    )
-    noisy_fake_x = inject_gaussian_noise(
-        fake_x,
-        std=cfg.cycle_noise_std,
-        enabled=cfg.cycle_noise_enabled,
-    )
-
-    rec_x = g_y_to_x(noisy_fake_y)
-    rec_y = g_x_to_y(noisy_fake_x)
-
-    id_x = g_y_to_x(real_x)
-    id_y = g_x_to_y(real_y)
-
-    pred_fake_y_for_g = d_y(fake_y)
-    pred_fake_x_for_g = d_x(fake_x)
-
-    g_losses = compute_generator_losses(
-        real_x=real_x,
-        real_y=real_y,
-        fake_y=fake_y,
-        fake_x=fake_x,
-        rec_x=rec_x,
-        rec_y=rec_y,
-        id_x=id_x,
-        id_y=id_y,
-        pred_fake_y=pred_fake_y_for_g,
-        pred_fake_x=pred_fake_x_for_g,
-        bundle=loss_bundle,
-    )
-
-    g_losses.total.backward()
-
-    if grad_clip_norm is not None:
-        torch.nn.utils.clip_grad_norm_(
-            list(g_x_to_y.parameters()) + list(g_y_to_x.parameters()),
-            max_norm=grad_clip_norm,
+        noisy_fake_y = inject_gaussian_noise(
+            fake_y,
+            std=cfg.cycle_noise_std,
+            enabled=cfg.cycle_noise_enabled,
+        )
+        noisy_fake_x = inject_gaussian_noise(
+            fake_x,
+            std=cfg.cycle_noise_std,
+            enabled=cfg.cycle_noise_enabled,
         )
 
-    optimizers.g.step()
+        rec_x = g_y_to_x(noisy_fake_y)
+        rec_y = g_x_to_y(noisy_fake_x)
+
+        id_x = g_y_to_x(real_x)
+        id_y = g_x_to_y(real_y)
+
+        pred_fake_y_for_g = d_y(fake_y)
+        pred_fake_x_for_g = d_x(fake_x)
+
+        g_losses = compute_generator_losses(
+            real_x=real_x,
+            real_y=real_y,
+            fake_y=fake_y,
+            fake_x=fake_x,
+            rec_x=rec_x,
+            rec_y=rec_y,
+            id_x=id_x,
+            id_y=id_y,
+            pred_fake_y=pred_fake_y_for_g,
+            pred_fake_x=pred_fake_x_for_g,
+            bundle=loss_bundle,
+        )
+
+    if amp_enabled:
+        assert scaler is not None
+        scaler.scale(g_losses.total).backward()
+
+        if grad_clip_norm is not None:
+            scaler.unscale_(optimizers.g)
+            torch.nn.utils.clip_grad_norm_(
+                list(g_x_to_y.parameters()) + list(g_y_to_x.parameters()),
+                max_norm=grad_clip_norm,
+            )
+
+        scaler.step(optimizers.g)
+    else:
+        g_losses.total.backward()
+
+        if grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(
+                list(g_x_to_y.parameters()) + list(g_y_to_x.parameters()),
+                max_norm=grad_clip_norm,
+            )
+
+        optimizers.g.step()
+
+    # Prepare fakes for discriminator.
+    # Replay buffers are CPU-backed, so they do not add persistent VRAM usage.
+    fake_x_for_d = fake_x.detach()
+    fake_y_for_d = fake_y.detach()
+
+    if fake_x_buffer is not None:
+        fake_x_for_d = fake_x_buffer.push_and_pop(fake_x_for_d)
+
+    if fake_y_buffer is not None:
+        fake_y_for_d = fake_y_buffer.push_and_pop(fake_y_for_d)
 
     # ------------------------------------------------------------
     # 2. Train D_X
@@ -140,42 +182,69 @@ def cyclegan_train_step(
 
     optimizers.d_x.zero_grad(set_to_none=True)
 
-    pred_real_x = d_x(real_x)
-    pred_fake_x = d_x(fake_x.detach())
+    with autocast_ctx:
+        pred_real_x = d_x(real_x)
+        pred_fake_x = d_x(fake_x_for_d)
 
-    d_x_losses = compute_discriminator_loss(
-        pred_real=pred_real_x,
-        pred_fake_detached=pred_fake_x,
-        bundle=loss_bundle,
-    )
+        d_x_losses = compute_discriminator_loss(
+            pred_real=pred_real_x,
+            pred_fake_detached=pred_fake_x,
+            bundle=loss_bundle,
+        )
 
-    d_x_losses.total.backward()
+    if amp_enabled:
+        assert scaler is not None
+        scaler.scale(d_x_losses.total).backward()
 
-    if grad_clip_norm is not None:
-        torch.nn.utils.clip_grad_norm_(d_x.parameters(), max_norm=grad_clip_norm)
+        if grad_clip_norm is not None:
+            scaler.unscale_(optimizers.d_x)
+            torch.nn.utils.clip_grad_norm_(d_x.parameters(),
+                                           max_norm=grad_clip_norm)
 
-    optimizers.d_x.step()
+        scaler.step(optimizers.d_x)
+    else:
+        d_x_losses.total.backward()
+
+        if grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(d_x.parameters(),
+                                           max_norm=grad_clip_norm)
+
+        optimizers.d_x.step()
 
     # ------------------------------------------------------------
     # 3. Train D_Y
     # ------------------------------------------------------------
     optimizers.d_y.zero_grad(set_to_none=True)
 
-    pred_real_y = d_y(real_y)
-    pred_fake_y = d_y(fake_y.detach())
+    with autocast_ctx:
+        pred_real_y = d_y(real_y)
+        pred_fake_y = d_y(fake_y_for_d)
 
-    d_y_losses = compute_discriminator_loss(
-        pred_real=pred_real_y,
-        pred_fake_detached=pred_fake_y,
-        bundle=loss_bundle,
-    )
+        d_y_losses = compute_discriminator_loss(
+            pred_real=pred_real_y,
+            pred_fake_detached=pred_fake_y,
+            bundle=loss_bundle,
+        )
 
-    d_y_losses.total.backward()
+    if amp_enabled:
+        assert scaler is not None
+        scaler.scale(d_y_losses.total).backward()
 
-    if grad_clip_norm is not None:
-        torch.nn.utils.clip_grad_norm_(d_y.parameters(), max_norm=grad_clip_norm)
+        if grad_clip_norm is not None:
+            scaler.unscale_(optimizers.d_y)
+            torch.nn.utils.clip_grad_norm_(d_y.parameters(),
+                                           max_norm=grad_clip_norm)
 
-    optimizers.d_y.step()
+        scaler.step(optimizers.d_y)
+        scaler.update()
+    else:
+        d_y_losses.total.backward()
+
+        if grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(d_y.parameters(),
+                                           max_norm=grad_clip_norm)
+
+        optimizers.d_y.step()
 
     losses = {
         "loss_g_total": g_losses.total,

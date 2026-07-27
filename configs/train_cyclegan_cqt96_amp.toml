@@ -1,0 +1,47 @@
+[paths]
+cache_root = "E:/Projects/Datasets/cache/cqt"
+output_root = "runs/cyclegan_cqt"
+experiment_name = "cqt96_amp_replay"
+
+[data]
+snippet_seconds = 4.0
+batch_size = 4
+num_workers = 2
+windows_per_track = 16
+val_fraction = 0.1
+split_seed = 1337
+val_batches = 20
+
+[training]
+epochs = 50
+lr_g = 0.0002
+lr_d = 0.0001
+grad_clip_norm = 5.0
+amp = true
+log_every = 25
+save_every_epochs = 1
+save_latest_every_steps = 250
+validate_every_epochs = 1
+seed = 1337
+device = "cuda"
+
+[model]
+base_channels = 32
+max_channels = 256
+num_res_blocks = 6
+no_attention = false
+residual_dropout = 0.0
+
+[losses]
+lambda_cycle_x = 10.0
+lambda_cycle_y = 2.0
+lambda_identity_x = 5.0
+lambda_identity_y = 5.0
+lambda_chroma = 2.0
+cycle_noise_std = 0.03
+disable_cycle_noise = false
+
+[stability]
+replay_buffer_size = 50
+replay_buffer_prob = 0.5
+
