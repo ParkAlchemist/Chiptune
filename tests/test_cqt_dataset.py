@@ -117,3 +117,38 @@ def test_unpaired_cqt_dataloader_batch_shapes():
     assert batch["phase_x"].shape[0] == BATCH_SIZE
     assert batch["phase_y"].shape[0] == BATCH_SIZE
 
+
+
+def test_train_val_splits_are_non_empty_and_different():
+    train_ds = build_unpaired_cqt_dataset(
+        cache_root=CACHE_ROOT,
+        snippet_seconds=SNIPPET_SECONDS,
+        sample_rate=SAMPLE_RATE,
+        hop_length=HOP_LENGTH,
+        windows_per_track=1,
+        return_chroma=False,
+        return_phase=False,
+        return_metadata=False,
+        split="train",
+        val_fraction=0.1,
+        split_seed=1337,
+    )
+
+    val_ds = build_unpaired_cqt_dataset(
+        cache_root=CACHE_ROOT,
+        snippet_seconds=SNIPPET_SECONDS,
+        sample_rate=SAMPLE_RATE,
+        hop_length=HOP_LENGTH,
+        windows_per_track=1,
+        return_chroma=False,
+        return_phase=False,
+        return_metadata=False,
+        split="val",
+        val_fraction=0.1,
+        split_seed=1337,
+    )
+
+    assert len(train_ds) > 0
+    assert len(val_ds) > 0
+    assert len(train_ds) != len(val_ds)
+

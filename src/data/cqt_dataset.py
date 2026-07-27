@@ -6,6 +6,7 @@ from typing import Any, Literal
 import csv
 import json
 import random
+import hashlib
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -73,6 +74,72 @@ def discover_cache_records(cache_root: Path) -> list[dict[str, Any]]:
         raise RuntimeError(f"No usable cache records found under: {cache_root}")
 
     return usable
+
+
+def stable_record_split_value(record: dict[str, Any], split_seed: int = 1337) -> float:
+    """
+    Deterministically maps a cache/source record to [0, 1).
+
+    Used for stable train/validation splitting at track level.
+    """
+    key = (
+        record.get("source_path")
+        or record.get("cache_path")
+        or record.get("id")
+        or json.dumps(record, sort_keys=True)
+    )
+
+    text = f"{split_seed}:{key}"
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+    # Use first 12 hex chars for a stable integer.
+    value = int(digest[:12], 16)
+    max_value = float(16 ** 12)
+
+    return value / max_value
+
+
+def split_cache_records(
+    records: list[dict[str, Any]],
+    split: Literal["train", "val", "all"] = "train",
+    val_fraction: float = 0.1,
+    split_seed: int = 1337,
+) -> list[dict[str, Any]]:
+    """
+    Deterministic track-level split.
+
+    split="train":
+        keeps records with split_value >= val_fraction
+
+    split="val":
+        keeps records with split_value < val_fraction
+
+    split="all":
+        keeps all records
+    """
+    if split == "all":
+        return records
+
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError(f"val_fraction must be in (0, 1), got {val_fraction}")
+
+    selected: list[dict[str, Any]] = []
+
+    for record in records:
+        value = stable_record_split_value(record, split_seed=split_seed)
+
+        if split == "val" and value < val_fraction:
+            selected.append(record)
+        elif split == "train" and value >= val_fraction:
+            selected.append(record)
+
+    if not selected:
+        raise RuntimeError(
+            f"No records selected for split={split}. "
+            f"records={len(records)}, val_fraction={val_fraction}"
+        )
+
+    return selected
 
 
 def seconds_to_frames(seconds: float, sample_rate: int, hop_length: int) -> int:
@@ -173,30 +240,39 @@ class CachedCQTTrackDataset(Dataset):
     """
 
     def __init__(
-        self,
-        cache_root: Path,
-        domain: Domain,
-        snippet_seconds: float = 4.0,
-        snippet_frames: int | None = None,
-        sample_rate: int = 22050,
-        hop_length: int = 512,
-        windows_per_track: int = 16,
-        random_window: bool = True,
-        random_track: bool = False,
-        return_chroma: bool = True,
-        return_phase: bool = False,
-        return_metadata: bool = True,
-        min_window_energy: float = 0.01,
-        max_resample_attempts: int = 10,
-        pad_short_tracks: bool = True,
-        track_cache_size: int = 8,
-        dtype: torch.dtype = torch.float32,
-        expected_config_hash: str | None = None,
-        require_config_hash_match: bool = False,
+            self,
+            cache_root: Path,
+            domain: Domain,
+            snippet_seconds: float = 4.0,
+            snippet_frames: int | None = None,
+            sample_rate: int = 22050,
+            hop_length: int = 512,
+            windows_per_track: int = 16,
+            random_window: bool = True,
+            random_track: bool = False,
+            return_chroma: bool = True,
+            return_phase: bool = False,
+            return_metadata: bool = True,
+            min_window_energy: float = 0.01,
+            max_resample_attempts: int = 10,
+            pad_short_tracks: bool = True,
+            track_cache_size: int = 8,
+            dtype: torch.dtype = torch.float32,
+            expected_config_hash: str | None = None,
+            require_config_hash_match: bool = False,
+            split: Literal["train", "val", "all"] = "train",
+            val_fraction: float = 0.1,
+            split_seed: int = 1337,
     ) -> None:
         self.cache_root = Path(cache_root)
         self.domain = domain
-        self.records = discover_cache_records(self.cache_root)
+        all_records = discover_cache_records(self.cache_root)
+        self.records = split_cache_records(
+            all_records,
+            split=split,
+            val_fraction=val_fraction,
+            split_seed=split_seed,
+        )
 
         self.sample_rate = sample_rate
         self.hop_length = hop_length
@@ -483,6 +559,9 @@ def build_unpaired_cqt_dataset(
     return_metadata: bool = False,
     min_window_energy: float = 0.01,
     track_cache_size: int = 8,
+    split: Literal["train", "val", "all"] = "train",
+    val_fraction: float = 0.1,
+    split_seed: int = 1337,
 ) -> UnpairedCQTDataset:
     cache_root = Path(cache_root)
 
@@ -501,6 +580,9 @@ def build_unpaired_cqt_dataset(
         return_metadata=return_metadata,
         min_window_energy=min_window_energy,
         track_cache_size=track_cache_size,
+        split=split,
+        val_fraction=val_fraction,
+        split_seed=split_seed,
     )
 
     chip_dataset = CachedCQTTrackDataset(
@@ -518,6 +600,9 @@ def build_unpaired_cqt_dataset(
         return_metadata=return_metadata,
         min_window_energy=min_window_energy,
         track_cache_size=track_cache_size,
+        split=split,
+        val_fraction=val_fraction,
+        split_seed=split_seed,
     )
 
     return UnpairedCQTDataset(
@@ -592,6 +677,9 @@ def build_unpaired_cqt_dataloader(
     return_metadata: bool = False,
     min_window_energy: float = 0.01,
     track_cache_size: int = 8,
+    split: Literal["train", "val", "all"] = "train",
+    val_fraction: float = 0.1,
+    split_seed: int = 1337,
 ) -> DataLoader:
     dataset = build_unpaired_cqt_dataset(
         cache_root=cache_root,
@@ -605,6 +693,9 @@ def build_unpaired_cqt_dataloader(
         return_metadata=return_metadata,
         min_window_energy=min_window_energy,
         track_cache_size=track_cache_size,
+        split=split,
+        val_fraction=val_fraction,
+        split_seed=split_seed,
     )
 
     return DataLoader(
