@@ -45,3 +45,10 @@ disable_cycle_noise = false
 replay_buffer_size = 50
 replay_buffer_prob = 0.5
 
+[previews]
+preview_every_epochs = 1
+preview_every_steps = 50000
+preview_num_samples = 8
+preview_device = "cpu"
+disable_previews = false
+

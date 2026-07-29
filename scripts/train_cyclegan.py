@@ -5,6 +5,7 @@ import sys
 import argparse
 import json
 import time
+import subprocess
 from dataclasses import asdict, dataclass
 from contextlib import nullcontext
 from typing import Any
@@ -84,6 +85,12 @@ class TrainRunConfig:
     replay_buffer_size: int = 50
     replay_buffer_prob: float = 0.5
 
+    preview_every_epochs: int = 1
+    preview_every_steps: int | None = None
+    preview_num_samples: int = 8
+    preview_device: str = "cpu"
+    disable_previews: bool = False
+
 
 def set_seed(seed: int) -> None:
     import random
@@ -147,6 +154,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snippet-seconds", type=float, default=4.0)
     parser.add_argument("--grad-clip-norm", type=float, default=5.0)
 
+    parser.add_argument("--preview-every-epochs", type=int, default=1)
+    parser.add_argument("--preview-every-steps", type=int, default=None)
+    parser.add_argument("--preview-num-samples", type=int, default=8)
+    parser.add_argument("--preview-device", type=str, default="cpu")
+    parser.add_argument("--disable-previews", action="store_true")
+
     return parser.parse_args()
 
 
@@ -178,6 +191,11 @@ def make_run_config(args: argparse.Namespace) -> TrainRunConfig:
         amp=args.amp,
         replay_buffer_size=args.replay_buffer_size,
         replay_buffer_prob=args.replay_buffer_prob,
+        preview_every_epochs=args.preview_every_epochs,
+        preview_every_steps=args.preview_every_steps,
+        preview_num_samples=args.preview_num_samples,
+        preview_device=args.preview_device,
+        disable_previews=args.disable_previews,
     )
 
 
@@ -255,6 +273,70 @@ def load_checkpoint(
 def log_losses(writer: SummaryWriter, losses: dict[str, float], global_step: int) -> None:
     for key, value in losses.items():
         writer.add_scalar(key, value, global_step)
+
+
+def run_preview_export(
+    checkpoint_path: Path,
+    train_config: TrainRunConfig,
+    run_dir: Path,
+    epoch: int,
+    global_step: int,
+) -> None:
+    if train_config.disable_previews:
+        return
+
+    preview_dir = (
+        run_dir
+        / "previews"
+        / f"step_{global_step:09d}_epoch_{epoch + 1:04d}"
+    )
+
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "export_cyclegan_preview.py"),
+
+        "--checkpoint",
+        str(checkpoint_path),
+
+        "--cache-root",
+        train_config.cache_root,
+
+        "--out-dir",
+        str(preview_dir),
+
+        "--split",
+        "val",
+
+        "--val-fraction",
+        str(train_config.val_fraction),
+
+        "--split-seed",
+        str(train_config.split_seed),
+
+        "--num-samples",
+        str(train_config.preview_num_samples),
+
+        "--snippet-seconds",
+        str(train_config.snippet_seconds),
+
+        "--sample-rate",
+        str(train_config.sample_rate),
+
+        "--hop-length",
+        str(train_config.hop_length),
+
+        "--device",
+        train_config.preview_device,
+    ]
+
+    print("\nRunning automatic preview export:")
+    print(" ".join(f'"{part}"' if " " in part else part for part in command))
+
+    try:
+        subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+    except Exception as exc:
+        # Do not kill a long training run just because preview export failed.
+        print(f"[WARNING] Preview export failed: {exc}")
 
 
 @torch.no_grad()
@@ -619,6 +701,34 @@ def main() -> None:
                     scaler=scaler,
                 )
 
+            if (
+                    train_cfg.preview_every_steps is not None
+                    and train_cfg.preview_every_steps > 0
+                    and global_step % train_cfg.preview_every_steps == 0
+            ):
+                step_checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+
+                save_checkpoint(
+                    path=step_checkpoint_path,
+                    epoch=epoch,
+                    global_step=global_step,
+                    models=models,
+                    optimizers=optimizers,
+                    train_config=train_cfg,
+                    generator_config=generator_cfg,
+                    discriminator_config=discriminator_cfg,
+                    loss_config=loss_cfg,
+                    scaler=scaler,
+                )
+
+                run_preview_export(
+                    checkpoint_path=step_checkpoint_path,
+                    train_config=train_cfg,
+                    run_dir=run_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                )
+
         epoch_seconds = time.time() - epoch_start
 
         writer.add_scalar("epoch/duration_seconds", epoch_seconds, epoch + 1)
@@ -654,6 +764,34 @@ def main() -> None:
                 discriminator_config=discriminator_cfg,
                 loss_config=loss_cfg,
                 scaler=scaler,
+            )
+
+        if (
+                not train_cfg.disable_previews
+                and train_cfg.preview_every_epochs > 0
+                and (epoch + 1) % train_cfg.preview_every_epochs == 0
+        ):
+            preview_checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+
+            save_checkpoint(
+                path=preview_checkpoint_path,
+                epoch=epoch,
+                global_step=global_step,
+                models=models,
+                optimizers=optimizers,
+                train_config=train_cfg,
+                generator_config=generator_cfg,
+                discriminator_config=discriminator_cfg,
+                loss_config=loss_cfg,
+                scaler=scaler,
+            )
+
+            run_preview_export(
+                checkpoint_path=preview_checkpoint_path,
+                train_config=train_cfg,
+                run_dir=run_dir,
+                epoch=epoch,
+                global_step=global_step,
             )
 
         if (epoch + 1) % train_cfg.validate_every_epochs == 0:
