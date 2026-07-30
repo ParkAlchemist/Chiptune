@@ -180,3 +180,7 @@ wandb/
 
 # Evaluation results
 eval/
+
+# Analysis results
+analysis/
+

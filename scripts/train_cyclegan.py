@@ -6,6 +6,7 @@ import argparse
 import json
 import time
 import subprocess
+import signal
 from dataclasses import asdict, dataclass
 from contextlib import nullcontext
 from typing import Any
@@ -90,6 +91,55 @@ class TrainRunConfig:
     preview_num_samples: int = 8
     preview_device: str = "cpu"
     disable_previews: bool = False
+
+
+class TrainingControl:
+    def __init__(self, control_dir: Path) -> None:
+        self.control_dir = control_dir
+        self.control_dir.mkdir(parents=True, exist_ok=True)
+
+        self.pause_file = self.control_dir / "PAUSE"
+        self.stop_file = self.control_dir / "STOP"
+        self.save_file = self.control_dir / "SAVE_NOW"
+        self.preview_file = self.control_dir / "PREVIEW_NOW"
+
+        self.interrupted = False
+
+    def request_stop_from_signal(self, signum=None, frame=None) -> None:
+        print("\n[CONTROL] Interrupt received. Will save checkpoint and stop cleanly.")
+        self.interrupted = True
+
+    def should_stop(self) -> bool:
+        return self.interrupted or self.stop_file.exists()
+
+    def should_pause(self) -> bool:
+        return self.pause_file.exists()
+
+    def should_save_now(self) -> bool:
+        return self.save_file.exists()
+
+    def should_preview_now(self) -> bool:
+        return self.preview_file.exists()
+
+    def clear_save_now(self) -> None:
+        if self.save_file.exists():
+            self.save_file.unlink()
+
+    def clear_preview_now(self) -> None:
+        if self.preview_file.exists():
+            self.preview_file.unlink()
+
+    def wait_if_paused(self) -> None:
+        if not self.should_pause():
+            return
+
+        print("[CONTROL] PAUSE file detected. Training paused.")
+        print(f"[CONTROL] Remove this file to resume: {self.pause_file}")
+
+        while self.should_pause() and not self.should_stop():
+            time.sleep(5.0)
+
+        print("[CONTROL] Pause released. Training resumed.")
 
 
 def set_seed(seed: int) -> None:
@@ -339,6 +389,37 @@ def run_preview_export(
         print(f"[WARNING] Preview export failed: {exc}")
 
 
+def save_training_state(
+    checkpoint_dir: Path,
+    epoch: int,
+    global_step: int,
+    models: CycleGANModels,
+    optimizers: CycleGANOptimizers,
+    train_cfg: TrainRunConfig,
+    generator_cfg: GeneratorConfig,
+    discriminator_cfg: DiscriminatorConfig,
+    loss_cfg: CycleGANLossConfig,
+    scaler,
+    checkpoint_name: str = "latest.pt",
+) -> Path:
+    path = checkpoint_dir / checkpoint_name
+
+    save_checkpoint(
+        path=path,
+        epoch=epoch,
+        global_step=global_step,
+        models=models,
+        optimizers=optimizers,
+        train_config=train_cfg,
+        generator_config=generator_cfg,
+        discriminator_config=discriminator_cfg,
+        loss_config=loss_cfg,
+        scaler=scaler,
+    )
+
+    return path
+
+
 @torch.no_grad()
 def run_validation(
     val_loader,
@@ -464,6 +545,12 @@ def main() -> None:
         device = torch.device(train_cfg.device)
 
     run_dir = Path(train_cfg.output_root) / train_cfg.experiment_name
+
+    control = TrainingControl(run_dir / "control")
+
+    signal.signal(signal.SIGINT, control.request_stop_from_signal)
+    signal.signal(signal.SIGTERM, control.request_stop_from_signal)
+
     checkpoint_dir = run_dir / "checkpoints"
     log_dir = run_dir / "tensorboard"
 
@@ -728,6 +815,85 @@ def main() -> None:
                     epoch=epoch,
                     global_step=global_step,
                 )
+
+            control.wait_if_paused()
+
+            if control.should_save_now():
+                manual_checkpoint = save_training_state(
+                    checkpoint_dir=checkpoint_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                    models=models,
+                    optimizers=optimizers,
+                    train_cfg=train_cfg,
+                    generator_cfg=generator_cfg,
+                    discriminator_cfg=discriminator_cfg,
+                    loss_cfg=loss_cfg,
+                    scaler=scaler,
+                    checkpoint_name=f"manual_step_{global_step:09d}.pt",
+                )
+
+                print(
+                    f"[CONTROL] Manual checkpoint saved: {manual_checkpoint}")
+                control.clear_save_now()
+
+            if control.should_preview_now():
+                preview_checkpoint = save_training_state(
+                    checkpoint_dir=checkpoint_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                    models=models,
+                    optimizers=optimizers,
+                    train_cfg=train_cfg,
+                    generator_cfg=generator_cfg,
+                    discriminator_cfg=discriminator_cfg,
+                    loss_cfg=loss_cfg,
+                    scaler=scaler,
+                    checkpoint_name=f"preview_step_{global_step:09d}.pt",
+                )
+
+                run_preview_export(
+                    checkpoint_path=preview_checkpoint,
+                    train_config=train_cfg,
+                    run_dir=run_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                )
+
+                control.clear_preview_now()
+
+            if control.should_stop():
+                stop_checkpoint = save_training_state(
+                    checkpoint_dir=checkpoint_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                    models=models,
+                    optimizers=optimizers,
+                    train_cfg=train_cfg,
+                    generator_cfg=generator_cfg,
+                    discriminator_cfg=discriminator_cfg,
+                    loss_cfg=loss_cfg,
+                    scaler=scaler,
+                    checkpoint_name=f"stop_step_{global_step:09d}.pt",
+                )
+
+                save_training_state(
+                    checkpoint_dir=checkpoint_dir,
+                    epoch=epoch,
+                    global_step=global_step,
+                    models=models,
+                    optimizers=optimizers,
+                    train_cfg=train_cfg,
+                    generator_cfg=generator_cfg,
+                    discriminator_cfg=discriminator_cfg,
+                    loss_cfg=loss_cfg,
+                    scaler=scaler,
+                    checkpoint_name="latest.pt",
+                )
+
+                print(f"[CONTROL] Stop requested. Saved: {stop_checkpoint}")
+                writer.close()
+                return
 
         epoch_seconds = time.time() - epoch_start
 
