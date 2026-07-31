@@ -184,3 +184,7 @@ eval/
 # Analysis results
 analysis/
 
+# Experiment branches
+scripts/branches
+configs/branches
+
