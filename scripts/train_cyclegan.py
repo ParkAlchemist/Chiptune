@@ -377,6 +377,8 @@ def run_preview_export(
 
         "--device",
         train_config.preview_device,
+
+        "--save_tensors",
     ]
 
     print("\nRunning automatic preview export:")
@@ -958,6 +960,7 @@ def main() -> None:
                 run_dir=run_dir,
                 epoch=epoch,
                 global_step=global_step,
+
             )
 
         if (epoch + 1) % train_cfg.validate_every_epochs == 0:
