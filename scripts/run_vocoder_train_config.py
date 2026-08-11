@@ -31,16 +31,12 @@ def flatten_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def value_to_cli_args(key: str, value: Any) -> list:
     """
-    Converts TOML key/value into train_cyclegan.py CLI args.
+    Converts TOML key/value into train_vocoder.py CLI args.
 
-    bool true:
-        amp = true -> --amp
-
-    bool false:
-        amp = false -> skipped
-
-    normal value:
-        batch_size = 4 -> --batch-size 4
+    Examples:
+        amp = true      -> --amp
+        amp = false     -> skipped
+        batch_size = 1  -> --batch-size 1
     """
     if value is None:
         return []
@@ -53,20 +49,27 @@ def value_to_cli_args(key: str, value: Any) -> list:
     return [flag, str(value)]
 
 
-def build_command(config_path: Path, passthrough_args: list[str]) -> list:
+def load_config(config_path: Path) -> dict[str, Any]:
     with config_path.open("rb") as f:
-        config = tomllib.load(f)
+        return tomllib.load(f)
 
+
+def build_command(
+    config_path: Path,
+    passthrough_args: list[str],
+) -> list:
+    config = load_config(config_path)
     flat = flatten_config(config)
 
     command = [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "train_cyclegan.py"),
+        str(PROJECT_ROOT / "scripts" / "train_vocoder.py"),
     ]
 
     for key, value in flat.items():
         command.extend(value_to_cli_args(key, value))
 
+    # Passthrough args go last so scalar args can override config values.
     command.extend(passthrough_args)
 
     return command
@@ -74,31 +77,36 @@ def build_command(config_path: Path, passthrough_args: list[str]) -> list:
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
-        description="Launch CycleGAN training from a TOML config."
+        description="Launch vocoder training from a TOML config."
     )
 
     parser.add_argument(
         "--config",
         type=Path,
         required=True,
-        help="Path to TOML training config.",
+        help="Path to TOML vocoder training config.",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the generated command without running it.",
+        help="Print generated command without running it.",
     )
 
     args, passthrough = parser.parse_known_args()
 
-    # Allow overrides after `--`.
-    # Example:
-    #   python scripts/run_train_config.py --config cfg.toml -- --batch-size 2
+    # Allows:
+    #   python scripts/run_vocoder_config.py --config cfg.toml -- --batch-size 2
     if passthrough and passthrough[0] == "--":
         passthrough = passthrough[1:]
 
     return args, passthrough
+
+
+def quote_command_part(part: str) -> str:
+    if " " in part:
+        return f'"{part}"'
+    return part
 
 
 def main() -> None:
@@ -111,10 +119,13 @@ def main() -> None:
     if not config_path.exists():
         raise FileNotFoundError(f"Missing config file: {config_path}")
 
-    command = build_command(config_path, passthrough)
+    command = build_command(
+        config_path=config_path,
+        passthrough_args=passthrough,
+    )
 
-    print("Generated training command:")
-    print(" ".join(f'"{part}"' if " " in part else part for part in command))
+    print("Generated vocoder training command:")
+    print(" ".join(quote_command_part(part) for part in command))
 
     if args.dry_run:
         return

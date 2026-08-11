@@ -335,7 +335,7 @@ def main() -> None:
 
     # Important:
     # Do not store resume in the config. The generated start script passes
-    # --resume branch_base.pt once. Future resumes should use resume_train_config.py.
+    # --resume branch_base.pt once. Future resumes should use resume_cyclegan_train_config.py.
 
     if "training" in branch_config and isinstance(branch_config["training"], dict):
         branch_config["training"].pop("resume", None)

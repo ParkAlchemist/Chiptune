@@ -71,6 +71,12 @@ class SingleResolutionSTFTLoss(nn.Module):
         self.win_length = int(win_length)
         self.eps = float(eps)
 
+        self.register_buffer(
+            "window",
+            torch.hann_window(self.win_length),
+            persistent=False,
+        )
+
     def _to_2d_audio(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim == 3:
             if x.shape[1] != 1:
@@ -93,11 +99,7 @@ class SingleResolutionSTFTLoss(nn.Module):
         with autocast_context:
             x = self._to_2d_audio(x).float()
 
-            window = torch.hann_window(
-                self.win_length,
-                device=x.device,
-                dtype=torch.float32,
-            )
+            window = self.window.to(device=x.device, dtype=torch.float32)
 
             stft = torch.stft(
                 x,
