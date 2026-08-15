@@ -41,7 +41,8 @@ class GeneratorConfig:
     decoder_dropout: float = 0.0
 
     use_attention: bool = True
-    attention_position: Literal["middle", "after_resblocks", "none"] = "middle"
+    num_att_blocks: int = 1
+    attention_position: Literal["balanced", "middle", "after_resblocks", "none"] = "middle"
     attention_reduction: int = 8
 
     upsample_mode: Literal["nearest", "bilinear"] = "nearest"
@@ -66,6 +67,135 @@ class DiscriminatorConfig:
 
     init_type: InitType = "normal"
     init_gain: float = 0.02
+
+
+def validate_attention_config(config: GeneratorConfig) -> None:
+    if not config.use_attention:
+        return
+
+    if config.num_att_blocks < 1:
+        raise ValueError(
+            "num_att_blocks must be >= 1 when use_attention=True. "
+            f"Got num_att_blocks={config.num_att_blocks}."
+        )
+
+    if config.num_att_blocks > config.num_res_blocks:
+        raise ValueError(
+            "num_att_blocks must be <= num_res_blocks. "
+            f"Got num_att_blocks={config.num_att_blocks}, "
+            f"num_res_blocks={config.num_res_blocks}."
+        )
+
+    valid_positions = {"middle", "after_resblocks", "balanced"}
+
+    if config.attention_position not in valid_positions:
+        raise ValueError(
+            f"Unknown attention_position={config.attention_position!r}. "
+            f"Expected one of {sorted(valid_positions)}."
+        )
+
+
+def make_residual_block(
+    channels: int,
+    config: GeneratorConfig,
+) -> nn.Module:
+    return ResidualBlock(
+        channels=channels,
+        padding_mode=config.padding_mode,
+        norm=config.norm,
+        dropout=config.residual_dropout,
+    )
+
+
+def make_attention_block(
+    channels: int,
+    config: GeneratorConfig,
+) -> nn.Module:
+    return SpatialSelfAttention(
+        channels=channels,
+        reduction=config.attention_reduction,
+    )
+
+
+def split_resblocks_for_balanced_attention(
+    num_res_blocks: int,
+    num_att_blocks: int,
+) -> list:
+    """
+    Splits residual blocks into num_att_blocks + 1 chunks.
+
+    Example:
+        num_res_blocks=6, num_att_blocks=2 -> [2, 2, 2]
+        num_res_blocks=7, num_att_blocks=2 -> [3, 2, 2]
+        num_res_blocks=8, num_att_blocks=3 -> [2, 2, 2, 2]
+    """
+    num_chunks = num_att_blocks + 1
+    base = num_res_blocks // num_chunks
+    remainder = num_res_blocks % num_chunks
+
+    chunks = []
+
+    for chunk_idx in range(num_chunks):
+        size = base + (1 if chunk_idx < remainder else 0)
+        chunks.append(size)
+
+    return chunks
+
+
+def build_bottleneck_layers(
+    channels: int,
+    config: GeneratorConfig,
+) -> list[nn.Module]:
+    validate_attention_config(config)
+
+    layers: list[nn.Module] = []
+
+    if not config.use_attention:
+        for _ in range(config.num_res_blocks):
+            layers.append(make_residual_block(channels, config))
+        return layers
+
+    if config.attention_position == "after_resblocks":
+        for _ in range(config.num_res_blocks):
+            layers.append(make_residual_block(channels, config))
+
+        for _ in range(config.num_att_blocks):
+            layers.append(make_attention_block(channels, config))
+
+        return layers
+
+    if config.attention_position == "middle":
+        before = config.num_res_blocks // 2
+        after = config.num_res_blocks - before
+
+        for _ in range(before):
+            layers.append(make_residual_block(channels, config))
+
+        for _ in range(config.num_att_blocks):
+            layers.append(make_attention_block(channels, config))
+
+        for _ in range(after):
+            layers.append(make_residual_block(channels, config))
+
+        return layers
+
+    if config.attention_position == "balanced":
+        chunks = split_resblocks_for_balanced_attention(
+            num_res_blocks=config.num_res_blocks,
+            num_att_blocks=config.num_att_blocks,
+        )
+
+        for chunk_idx, chunk_size in enumerate(chunks):
+            for _ in range(chunk_size):
+                layers.append(make_residual_block(channels, config))
+
+            # Insert attention between chunks, not after the final chunk.
+            if chunk_idx < config.num_att_blocks:
+                layers.append(make_attention_block(channels, config))
+
+        return layers
+
+    raise ValueError(f"Unhandled attention_position: {config.attention_position}")
 
 
 class AudioResnetGenerator(nn.Module):
@@ -131,35 +261,12 @@ class AudioResnetGenerator(nn.Module):
             current_channels = next_channels
 
         # Bottleneck residual transformation
-        attention_inserted = False
-        midpoint = config.num_res_blocks // 2
-
-        for block_idx in range(config.num_res_blocks):
-            layers.append(
-                ResidualBlock(
-                    channels=current_channels,
-                    padding_mode=config.padding_mode,
-                    norm=config.norm,
-                    dropout=config.residual_dropout,
-                )
+        layers.extend(
+            build_bottleneck_layers(
+                channels=current_channels,
+                config=config,
             )
-
-            if config.use_attention and config.attention_position == "middle" and block_idx == midpoint:
-                layers.append(
-                    SpatialSelfAttention(
-                        channels=current_channels,
-                        reduction=config.attention_reduction,
-                    )
-                )
-                attention_inserted = True
-
-        if config.use_attention and config.attention_position == "after_resblocks" and not attention_inserted:
-            layers.append(
-                SpatialSelfAttention(
-                    channels=config.base_channels,
-                    reduction=config.attention_reduction,
-                )
-            )
+        )
 
         # Decoder/Upsampling
         for _ in range(config.num_downsamples):

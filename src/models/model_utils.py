@@ -62,15 +62,23 @@ def get_norm_layer(
 
 
 class CQTBufferPad(nn.Module):
-    def __init__(self, pad_time_left, pad_time_right, pad_freq_top, pad_freq_bottom) -> None:
+    def __init__(
+            self,
+            pad_time_left: int,
+            pad_time_right: int,
+            pad_freq_low: int,
+            pad_freq_high: int,
+            freq_pad_value: float = 0.0,
+    ) -> None:
         super().__init__()
 
         self.time_pad = (pad_time_left, pad_time_right, 0, 0)
-        self.freq_pad = (0, 0, pad_freq_top, pad_freq_bottom)
+        self.freq_pad = (0, 0, pad_freq_low, pad_freq_high)
+        self.freq_pad_value = freq_pad_value
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, self.time_pad, mode="reflect")
-        x = F.pad(x, self.freq_pad, mode="constant", value=0.0)
+        x = F.pad(x, self.freq_pad, mode="constant", value=self.freq_pad_value)
         return x
 
 
@@ -92,8 +100,8 @@ def get_padding_layer(
 
     if padding_mode == "cqt":
         if isinstance(padding, tuple):
-            left, right, top, bottom = padding
-            return CQTBufferPad(left, right, top, bottom)
+            left, right, freq_low, freq_high = padding
+            return CQTBufferPad(left, right, freq_low, freq_high)
         if isinstance(padding, int):
             return CQTBufferPad(padding, padding, padding, padding)
 

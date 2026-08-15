@@ -10,6 +10,8 @@ from ..model_utils import (
     get_padding_layer,
 )
 
+from squeeze_excite_block import SqueezeExciteBlock
+
 
 class ResidualBlock(nn.Module):
     """
@@ -17,7 +19,7 @@ class ResidualBlock(nn.Module):
 
     Keeps spatial size and channel count unchanged:
 
-    x -> Pad -> Conv -> Norm -> ReLU -> Dropout? -> Pad -> Conv -> Norm -> +x
+    x -> Pad -> Conv -> Norm -> ReLU -> Dropout? -> Pad -> Conv -> Norm -> SE? -> +x
     """
     def __init__(
             self,
@@ -29,6 +31,7 @@ class ResidualBlock(nn.Module):
             bias: bool | None = None,
             norm_affine: bool = True,
             residual_scale: float = 1.0,
+            use_se: bool = False,
     ) -> None:
         super().__init__()
 
@@ -61,6 +64,10 @@ class ResidualBlock(nn.Module):
             get_norm_layer(channels, norm=norm, affine=norm_affine),
         )
 
+        self.se = SqueezeExciteBlock(channels=channels) if use_se else nn.Identity()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.residual_scale * self.block(x)
+        residual = self.block(x)
+        residual = self.se(residual)
+        return x + self.residual_scale * residual
 
