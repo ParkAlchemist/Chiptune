@@ -39,7 +39,8 @@ class SnakeBeta(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + (1.0 / (self.beta.abs() + self.eps)) * torch.sin(self.alpha * x) ** 2
+        sin_term = torch.sin(self.alpha * x)
+        return x + sin_term.mul(sin_term) / (self.beta.abs() + self.eps)
 
 
 def get_activation(

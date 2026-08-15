@@ -1,13 +1,15 @@
 from __future__ import annotations
 from typing import Literal
 
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils import spectral_norm as apply_spectral_norm
 
 
 NormType = Literal["none", "batch", "instance", "group"]
 ActivationType = Literal["none", "relu", "leaky_relu", "gelu", "silu", "tanh"]
-PaddingMode = Literal["reflect", "replicate", "zeros"]
+PaddingMode = Literal["reflect", "replicate", "zeros", "cqt"]
 InitType = Literal["normal", "xavier", "kaiming", "orthogonal"]
 
 
@@ -59,6 +61,19 @@ def get_norm_layer(
     raise ValueError(f"Unknown norm function: {norm}")
 
 
+class CQTBufferPad(nn.Module):
+    def __init__(self, pad_time_left, pad_time_right, pad_freq_top, pad_freq_bottom) -> None:
+        super().__init__()
+
+        self.time_pad = (pad_time_left, pad_time_right, 0, 0)
+        self.freq_pad = (0, 0, pad_freq_top, pad_freq_bottom)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, self.time_pad, mode="reflect")
+        x = F.pad(x, self.freq_pad, mode="constant", value=0.0)
+        return x
+
+
 def get_padding_layer(
         padding: int | tuple[int, int, int, int],
         padding_mode: PaddingMode = "reflect",
@@ -74,6 +89,13 @@ def get_padding_layer(
 
     if padding_mode == "zeros":
         return nn.ZeroPad2d(padding)
+
+    if padding_mode == "cqt":
+        if isinstance(padding, tuple):
+            left, right, top, bottom = padding
+            return CQTBufferPad(left, right, top, bottom)
+        if isinstance(padding, int):
+            return CQTBufferPad(padding, padding, padding, padding)
 
     raise ValueError(f"Unknown padding mode: {padding_mode}")
 
