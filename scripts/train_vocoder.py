@@ -403,6 +403,8 @@ def main() -> None:
         num_workers=cfg.num_workers,
         drop_last=True,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=True if cfg.num_workers > 0 else False,
+        prefetch_factor=2 if cfg.num_workers > 0 else 1,
     )
 
     preview_loader = DataLoader(
@@ -546,7 +548,9 @@ def main() -> None:
                 )
 
                 if global_step % cfg.save_every_steps == 0:
-                    checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+
+                    #checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+                    """
                     save_checkpoint(
                         checkpoint_path,
                         epoch,
@@ -559,6 +563,7 @@ def main() -> None:
                         discriminator_config,
                         scaler,
                     )
+                    """
 
                     latest_path = checkpoint_dir / "latest.pt"
                     save_checkpoint(
@@ -574,8 +579,8 @@ def main() -> None:
                         scaler,
                     )
 
-                    latest_checkpoint_path = str(checkpoint_path)
-                    print(f"\nSaved checkpoint: {checkpoint_path}")
+                    #latest_checkpoint_path = str(checkpoint_path)
+                    print(f"\nSaved checkpoint: {str(latest_path)}")
 
                 if cfg.preview_every_steps > 0 and global_step % cfg.preview_every_steps == 0:
                     preview_dir = preview_root / f"step_{global_step:09d}"

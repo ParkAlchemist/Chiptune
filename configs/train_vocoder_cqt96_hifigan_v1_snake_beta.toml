@@ -1,7 +1,7 @@
 [paths]
 chip_cache_root = "E:/Projects/Datasets/cache/cqt/chip"
 output_root = "runs/vocoder_cqt"
-experiment_name = "cqt96_hifigan_v1"
+experiment_name = "cqt96_hifigan_v1_snake_beta"
 
 [data]
 sample_rate = 22050
@@ -30,7 +30,7 @@ lambda_feature_matching = 2.0
 lambda_mrstft = 45.0
 
 [model]
-activation = "leaky_relu"
+activation = "snake_beta"
 upsample_initial_channel = 128
 discriminator_size = "small"
 
@@ -40,8 +40,8 @@ amp_start_step = 1000
 amp_init_scale = 256.0
 
 [logging]
-log_every_steps = 25
+log_every_steps = 50
 save_every_steps = 5000
-preview_every_steps = 1000
+preview_every_steps = 5000
 preview_num_samples = 4
 
