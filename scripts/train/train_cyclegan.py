@@ -12,12 +12,9 @@ from dataclasses import asdict, dataclass
 from contextlib import nullcontext
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-runpy.run_path(
-    str(PROJECT_ROOT / "scripts" / "train" / "train_cyclegan.py"),
-    run_name="__main__",
-)
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -348,7 +345,7 @@ def run_preview_export(
 
     command = [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "export_cyclegan_preview.py"),
+        str(PROJECT_ROOT / "scripts" / "eval" / "export_cyclegan_preview.py"),
 
         "--checkpoint",
         str(checkpoint_path),

@@ -11,13 +11,8 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-runpy.run_path(
-    str(PROJECT_ROOT / "scripts" / "train" / "train_vocoder.py"),
-    run_name="__main__",
-)
-
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import soundfile as sf
