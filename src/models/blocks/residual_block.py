@@ -10,7 +10,7 @@ from ..model_utils import (
     get_padding_layer,
 )
 
-from squeeze_excite_block import SqueezeExciteBlock
+from .squeeze_excite_block import SqueezeExciteBlock
 
 
 class ResidualBlock(nn.Module):

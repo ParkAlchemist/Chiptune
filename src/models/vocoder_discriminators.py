@@ -6,7 +6,8 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils import weight_norm, spectral_norm, remove_weight_norm
+from torch.nn.utils import spectral_norm, remove_weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 
 
 NormType = Literal["weight",  "spectral", "none"]
