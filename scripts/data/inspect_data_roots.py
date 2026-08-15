@@ -1,8 +1,14 @@
 from pathlib import Path
 from collections import Counter
+import sys
 
 from src.config import config
 from src.data.audio_utils import list_audio_files
+
+
+THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = THIS_FILE.parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def inspect_domain(name: str, path: Path) -> None:

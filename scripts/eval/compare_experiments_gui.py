@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import tempfile
 from typing import Any
 
@@ -10,6 +11,11 @@ import pandas as pd
 import soundfile as sf
 import streamlit as st
 import torch
+
+
+THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = THIS_FILE.parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 
 DEFAULT_EVAL_ROOT = "eval"

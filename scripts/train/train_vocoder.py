@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 import sys
 import argparse
 import json
@@ -11,7 +12,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+
+runpy.run_path(
+    str(PROJECT_ROOT / "scripts" / "train" / "train_vocoder.py"),
+    run_name="__main__",
+)
+
 
 import numpy as np
 import soundfile as sf
@@ -396,16 +402,20 @@ def main() -> None:
         cache_waveforms=cfg.cache_waveforms,
     )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        num_workers=cfg.num_workers,
-        drop_last=True,
-        pin_memory=(device.type == "cuda"),
-        persistent_workers=True if cfg.num_workers > 0 else False,
-        prefetch_factor=2 if cfg.num_workers > 0 else 1,
-    )
+    loader_kwargs = {
+        "dataset": train_dataset,
+        "batch_size": cfg.batch_size,
+        "shuffle": True,
+        "num_workers": cfg.num_workers,
+        "drop_last": True,
+        "pin_memory": device.type == "cuda",
+    }
+
+    if cfg.num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    train_loader = DataLoader(**loader_kwargs)
 
     preview_loader = DataLoader(
         preview_dataset,

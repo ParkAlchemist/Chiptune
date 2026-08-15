@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 import sys
 import argparse
 import json
@@ -8,7 +9,11 @@ import csv
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+
+runpy.run_path(
+    str(PROJECT_ROOT / "scripts" / "eval" / "export_cyclegan_preview.py"),
+    run_name="__main__",
+)
 
 import matplotlib
 matplotlib.use("Agg")

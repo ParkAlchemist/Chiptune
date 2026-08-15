@@ -183,7 +183,7 @@ def write_start_script(
 cd "{PROJECT_ROOT}"
 $env:PYTHONPATH = "."
 
-python scripts/run_train_config.py `
+python scripts/train/run_cyclegan_train_config.py `
   --config "{config_rel}" `
   -- --resume "{checkpoint_rel}"
 """
@@ -203,7 +203,7 @@ def write_resume_script(
 cd "{PROJECT_ROOT}"
 $env:PYTHONPATH = "."
 
-python scripts/resume_train_config.py `
+python scripts/train/resume_cyclegan_train_config.py `
   --config "{config_rel}"
 """
 

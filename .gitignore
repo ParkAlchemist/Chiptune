@@ -179,7 +179,7 @@ runs/
 wandb/
 
 # Evaluation results
-eval/
+/eval/
 
 # Analysis results
 analysis/

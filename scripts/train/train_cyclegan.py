@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 import sys
 import argparse
 import json
@@ -12,7 +13,11 @@ from contextlib import nullcontext
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+
+runpy.run_path(
+    str(PROJECT_ROOT / "scripts" / "train" / "train_cyclegan.py"),
+    run_name="__main__",
+)
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -378,7 +383,7 @@ def run_preview_export(
         "--device",
         train_config.preview_device,
 
-        "--save_tensors",
+        "--save-tensors",
     ]
 
     print("\nRunning automatic preview export:")

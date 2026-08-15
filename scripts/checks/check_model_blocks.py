@@ -1,7 +1,8 @@
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = THIS_FILE.parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
