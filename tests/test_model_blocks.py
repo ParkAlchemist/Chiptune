@@ -6,6 +6,65 @@ from src.models.blocks.upsample_block import UpsampleBlock
 from src.models.blocks.residual_block import ResidualBlock
 from src.models.blocks.spatial_self_attention import SpatialSelfAttention
 from src.models.blocks.patch_discriminator_block import PatchDiscriminatorBlock
+from src.models.blocks.squeeze_excite_block import SqueezeExciteBlock
+from src.models.model_utils import CQTBufferPad, get_padding_layer
+
+
+def test_cqt_buffer_pad_shape():
+    x = torch.randn(2, 8, 16, 32)
+
+    pad = CQTBufferPad(
+        pad_time_left=1,
+        pad_time_right=2,
+        pad_freq_low=3,
+        pad_freq_high=4,
+    )
+
+    y = pad(x)
+
+    assert y.shape == (2, 8, 16 + 3 + 4, 32 + 1 + 2)
+
+
+def test_get_padding_layer_cqt_int():
+    x = torch.randn(2, 8, 16, 32)
+
+    pad = get_padding_layer(1, padding_mode="cqt")
+    y = pad(x)
+
+    assert y.shape == (2, 8, 18, 34)
+
+
+def test_get_padding_layer_cqt_tuple():
+    x = torch.randn(2, 8, 16, 32)
+
+    pad = get_padding_layer((1, 2, 3, 4), padding_mode="cqt")
+    y = pad(x)
+
+    assert y.shape == (2, 8, 23, 35)
+
+
+def test_squeeze_excite_shape_and_gradient():
+    block = SqueezeExciteBlock(channels=8, reduction=16)
+
+    x = torch.randn(2, 8, 16, 32, requires_grad=True)
+    y = block(x)
+
+    assert y.shape == x.shape
+
+    loss = y.mean()
+    loss.backward()
+
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
+def test_squeeze_excite_handles_small_channel_count():
+    block = SqueezeExciteBlock(channels=4, reduction=16)
+
+    x = torch.randn(2, 4, 8, 8)
+    y = block(x)
+
+    assert y.shape == x.shape
 
 
 def test_base_blocks_shape_flow():
