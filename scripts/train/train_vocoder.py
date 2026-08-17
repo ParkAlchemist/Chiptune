@@ -92,6 +92,8 @@ class VocoderTrainConfig:
     seed: int = 1337
     resume: str | None = None
 
+    overfit_batches: int | None = None
+
 
 class StopController:
     def __init__(self) -> None:
@@ -157,6 +159,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--resume", type=str, default=None)
+
+    parser.add_argument("--overfit-batches", type=int, default=None)
 
     return parser.parse_args()
 
@@ -412,6 +416,54 @@ def main() -> None:
 
     train_loader = DataLoader(**loader_kwargs)
 
+    if cfg.overfit_batches is not None:
+        print(f"Overfit mode enabled: using first {cfg.overfit_batches} batches repeatedly.")
+
+        overfit_batches = []
+        iterator = iter(train_loader)
+
+        for _ in range(cfg.overfit_batches):
+            overfit_batches.append(next(iterator))
+
+    else:
+        overfit_batches = None
+
+    if overfit_batches is not None:
+        debug_dir = run_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        overfit_path = debug_dir / "overfit_batches.pt"
+        torch.save(overfit_batches, overfit_path)
+
+        print(f"Saved fixed overfit batches: {overfit_path}")
+
+        metadata_rows = []
+
+        for batch_idx, batch in enumerate(overfit_batches):
+            batch_size = int(batch["cqt"].shape[0])
+
+            for item_idx in range(batch_size):
+                metadata_rows.append(
+                    {
+                        "batch_index": batch_idx,
+                        "item_index": item_idx,
+                        "source_path": batch.get("source_path", [""])[
+                            item_idx],
+                        "frame_start": int(batch["frame_start"][item_idx]),
+                        "frame_end": int(batch["frame_end"][item_idx]),
+                        "sample_start": int(batch["sample_start"][item_idx]),
+                        "sample_end": int(batch["sample_end"][item_idx]),
+                    }
+                )
+
+        with (debug_dir / "overfit_batches_metadata.json").open("w",
+                                                                encoding="utf-8") as f:
+            json.dump(metadata_rows, f, indent=2, ensure_ascii=False)
+
+        print(
+            f"Saved fixed overfit metadata: {debug_dir / 'overfit_batches_metadata.json'}")
+
+
     preview_loader = DataLoader(
         preview_dataset,
         batch_size=1,
@@ -495,8 +547,10 @@ def main() -> None:
             generator.train()
             discriminator.train()
 
+            epoch_iterable = overfit_batches if overfit_batches is not None else train_loader
+
             progress = tqdm(
-                train_loader,
+                epoch_iterable,
                 desc=f"Epoch {epoch + 1}/{cfg.epochs}",
                 leave=True,
             )
@@ -554,21 +608,22 @@ def main() -> None:
 
                 if global_step % cfg.save_every_steps == 0:
 
-                    #checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
-                    """
-                    save_checkpoint(
-                        checkpoint_path,
-                        epoch,
-                        global_step,
-                        models,
-                        optimizers,
-                        loss_bundle,
-                        cfg,
-                        generator_config,
-                        discriminator_config,
-                        scaler,
-                    )
-                    """
+                    if cfg.overfit_batches is None:
+                        checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+                        save_checkpoint(
+                            checkpoint_path,
+                            epoch,
+                            global_step,
+                            models,
+                            optimizers,
+                            loss_bundle,
+                            cfg,
+                            generator_config,
+                            discriminator_config,
+                            scaler,
+                        )
+                        latest_checkpoint_path = str(checkpoint_path)
+                        print(f"\nSaved checkpoint: {str(latest_checkpoint_path)}")
 
                     latest_path = checkpoint_dir / "latest.pt"
                     save_checkpoint(
@@ -584,15 +639,12 @@ def main() -> None:
                         scaler,
                     )
 
-                    #latest_checkpoint_path = str(checkpoint_path)
-                    print(f"\nSaved checkpoint: {str(latest_path)}")
-
                 if cfg.preview_every_steps > 0 and global_step % cfg.preview_every_steps == 0:
                     preview_dir = preview_root / f"step_{global_step:09d}"
                     export_preview_wavs(
                         preview_dir=preview_dir,
                         generator=generator,
-                        preview_loader=preview_loader,
+                        preview_loader=epoch_iterable if overfit_batches is not None else preview_loader,
                         device=device,
                         sample_rate=cfg.sample_rate,
                         num_samples=cfg.preview_num_samples,
@@ -619,19 +671,22 @@ def main() -> None:
                 if stop_controller.stop_requested:
                     raise KeyboardInterrupt
 
-            epoch_path = checkpoint_dir / f"epoch_{epoch + 1:04d}.pt"
-            save_checkpoint(
-                epoch_path,
-                epoch,
-                global_step,
-                models,
-                optimizers,
-                loss_bundle,
-                cfg,
-                generator_config,
-                discriminator_config,
-                scaler,
-            )
+            if cfg.overfit_batches is None:
+                epoch_path = checkpoint_dir / f"epoch_{epoch + 1:04d}.pt"
+                save_checkpoint(
+                    epoch_path,
+                    epoch,
+                    global_step,
+                    models,
+                    optimizers,
+                    loss_bundle,
+                    cfg,
+                    generator_config,
+                    discriminator_config,
+                    scaler,
+                )
+                print(f"Saved epoch checkpoint: {epoch_path}")
+
 
             latest_path = checkpoint_dir / "latest.pt"
             save_checkpoint(
@@ -646,8 +701,6 @@ def main() -> None:
                 discriminator_config,
                 scaler,
             )
-
-            print(f"Saved epoch checkpoint: {epoch_path}")
 
     except KeyboardInterrupt:
         stop_path = checkpoint_dir / f"stop_step_{global_step:09d}.pt"

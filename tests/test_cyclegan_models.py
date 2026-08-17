@@ -121,3 +121,63 @@ def test_generator_backward_pass_cpu():
     assert any(g is not None for g in grads)
     assert all(torch.isfinite(g).all() for g in grads if g is not None)
 
+
+def test_generator_forward_with_balanced_attention():
+    cfg = GeneratorConfig(
+        base_channels=16,
+        max_channels=128,
+        num_downsamples=2,
+        num_res_blocks=6,
+        use_attention=True,
+        num_att_blocks=2,
+        attention_position="balanced",
+        padding_mode="reflect",
+    )
+
+    model = AudioResnetGenerator(cfg)
+
+    x = torch.randn(2, 1, 96, 172)
+    y = model(x)
+
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+
+
+def test_generator_forward_with_cqt_padding():
+    cfg = GeneratorConfig(
+        base_channels=16,
+        max_channels=128,
+        num_downsamples=2,
+        num_res_blocks=2,
+        use_attention=False,
+        padding_mode="cqt",
+    )
+
+    model = AudioResnetGenerator(cfg)
+
+    x = torch.randn(2, 1, 96, 172)
+    y = model(x)
+
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+
+
+def test_generator_forward_with_squeeze_excite():
+    cfg = GeneratorConfig(
+        base_channels=16,
+        max_channels=128,
+        num_downsamples=2,
+        num_res_blocks=2,
+        use_attention=False,
+        padding_mode="reflect",
+        use_se=True,
+        se_reduction=16,
+    )
+
+    model = AudioResnetGenerator(cfg)
+
+    x = torch.randn(2, 1, 96, 172)
+    y = model(x)
+
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()

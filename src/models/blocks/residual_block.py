@@ -32,6 +32,7 @@ class ResidualBlock(nn.Module):
             norm_affine: bool = True,
             residual_scale: float = 1.0,
             use_se: bool = False,
+            se_reduction: int = 16,
     ) -> None:
         super().__init__()
 
@@ -64,7 +65,7 @@ class ResidualBlock(nn.Module):
             get_norm_layer(channels, norm=norm, affine=norm_affine),
         )
 
-        self.se = SqueezeExciteBlock(channels=channels) if use_se else nn.Identity()
+        self.se = SqueezeExciteBlock(channels=channels, reduction=se_reduction) if use_se else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = self.block(x)

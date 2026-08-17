@@ -52,6 +52,9 @@ class GeneratorConfig:
     init_type: InitType = "normal"
     init_gain: float = 0.02
 
+    use_se: bool = False
+    se_reduction: int = 16
+
 
 @dataclass
 class DiscriminatorConfig:
@@ -104,6 +107,8 @@ def make_residual_block(
         padding_mode=config.padding_mode,
         norm=config.norm,
         dropout=config.residual_dropout,
+        use_se=config.use_se,
+        se_reduction=config.se_reduction,
     )
 
 
