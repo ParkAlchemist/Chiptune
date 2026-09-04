@@ -7,9 +7,6 @@ import json
 import sys
 from typing import Any
 
-from src.eval.vocoder_diagnostics import build_fixed_vocoder_batch, \
-    tensor_to_cqt_np, tensor_to_audio_np
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -33,6 +30,8 @@ from src.losses.vocoder_losses import (
     MultiResolutionSTFTConfig,
     MultiResolutionSTFTLoss,
 )
+
+from src.eval.vocoder_diagnostics import build_fixed_vocoder_batch, tensor_to_cqt_np, tensor_to_audio_np
 
 
 def parse_args() -> argparse.Namespace:
