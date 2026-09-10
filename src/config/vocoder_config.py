@@ -183,7 +183,10 @@ class PeriodDiscriminatorConfig:
 class MultiPeriodDiscriminatorConfig:
     periods: tuple[int, ...] = (2, 3, 5, 7, 11)
     channels: tuple[int, ...] = (32, 128, 512, 1024, 1024)
+    kernel_size: int = 5
+    stride: int = 3
     norm: NormType = "weight"
+    negative_slope: float = 0.2
 
 
 @dataclass
@@ -197,10 +200,20 @@ class ScaleDiscriminatorConfig:
 
 
 @dataclass
+@dataclass
 class MultiScaleDiscriminatorConfig:
+    discriminator: ScaleDiscriminatorConfig = field(
+        default_factory=ScaleDiscriminatorConfig
+    )
+
     num_scales: int = 3
+
     first_discriminator_norm: NormType = "spectral"
     other_discriminator_norm: NormType = "weight"
+
+    pool_kernel_size: int = 4
+    pool_stride: int = 2
+    pool_padding: int = 2
 
 
 @dataclass

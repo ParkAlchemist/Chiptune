@@ -515,5 +515,14 @@ def load_vocoder_config(
         ),
     )
 
+    from src.config.vocoder_config_validator import (
+        validate_vocoder_config,
+    )
+
+    validate_vocoder_config(
+        config,
+        check_paths=False,
+    )
+
     return config
 

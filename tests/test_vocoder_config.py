@@ -23,3 +23,19 @@ def test_nested_config_instances_are_independent():
     first.generator.snake_beta.alpha_initial = 2.0
 
     assert second.generator.snake_beta.alpha_initial == 1.0
+
+
+def test_default_msd_config_contains_pooling_and_scale_config():
+    config = VocoderExperimentConfig()
+
+    assert config.discriminator.msd.pool_kernel_size == 4
+    assert config.discriminator.msd.pool_stride == 2
+    assert config.discriminator.msd.pool_padding == 2
+
+    scale = config.discriminator.msd.discriminator
+
+    assert len(scale.channels) == len(scale.kernel_sizes)
+    assert len(scale.channels) == len(scale.strides)
+    assert len(scale.channels) == len(scale.groups)
+
+
