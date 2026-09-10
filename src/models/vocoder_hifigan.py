@@ -7,10 +7,9 @@ from torch.nn.utils import remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 
 
-from configs.vocoder_config import (
+from src.config.vocoder_config import (
     VocoderGeneratorModelConfig,
-    ActivationType, VocoderDataConfig,
-)
+    ActivationType, )
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:

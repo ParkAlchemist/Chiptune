@@ -7,7 +7,7 @@ from torch.nn.utils import spectral_norm, remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 
 
-from configs.vocoder_config import (
+from src.config.vocoder_config import (
     PeriodDiscriminatorConfig,
     NormType,
     MultiPeriodDiscriminatorConfig,
