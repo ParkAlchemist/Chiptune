@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +7,14 @@ from torch.nn.utils import spectral_norm, remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 
 
-NormType = Literal["weight",  "spectral", "none"]
+from configs.vocoder_config import (
+    PeriodDiscriminatorConfig,
+    NormType,
+    MultiPeriodDiscriminatorConfig,
+    ScaleDiscriminatorConfig,
+    MultiScaleDiscriminatorConfig,
+    VocoderDiscriminatorConfig,
+)
 
 
 def apply_norm(module: nn.Module, norm: NormType) -> nn.Module:
@@ -29,16 +33,6 @@ def try_remove_weight_norm(module: nn.Module) -> None:
         remove_weight_norm(module)
     except ValueError:
         pass
-
-
-@dataclass
-class PeriodDiscriminatorConfig:
-    period: int
-    channels: tuple[int, ...] = (32, 128, 512, 1024, 1024)
-    kernel_size: int = 5
-    stride: int = 3
-    norm: NormType = "weight"
-    negative_slope: float = 0.2
 
 
 class DiscriminatorPeriod(nn.Module):
@@ -132,13 +126,6 @@ class DiscriminatorPeriod(nn.Module):
         try_remove_weight_norm(self.conv_post)
 
 
-@dataclass
-class MultiPeriodDiscriminatorConfig:
-    periods: tuple[int, ...] = (2, 3, 5, 7, 11)
-    channels: tuple[int, ...] = (32, 128, 512, 1024, 1024)
-    norm: NormType = "weight"
-
-
 class MultiPeriodDiscriminator(nn.Module):
     """
     Ensemble of period discriminators.
@@ -194,16 +181,6 @@ class MultiPeriodDiscriminator(nn.Module):
     def remove_weight_norm(self) -> None:
         for discriminator in self.discriminators:
             discriminator.remove_weight_norm()
-
-
-@dataclass
-class ScaleDiscriminatorConfig:
-    channels: tuple[int, ...] = (128, 128, 256, 512, 1024, 1024)
-    kernel_sizes: tuple[int, ...] = (15, 41, 41, 41, 41, 5)
-    strides: tuple[int, ...] = (1, 2, 2, 4, 4, 1)
-    groups: tuple[int, ...] = (1, 4, 16, 16, 16, 16)
-    norm: NormType = "weight"
-    negative_slope: float = 0.2
 
 
 class DiscriminatorScale(nn.Module):
@@ -289,13 +266,6 @@ class DiscriminatorScale(nn.Module):
         try_remove_weight_norm(self.conv_post)
 
 
-@dataclass
-class MultiScaleDiscriminatorConfig:
-    num_scales: int = 3
-    first_discriminator_norm: NormType = "spectral"
-    other_discriminator_norm: NormType = "weight"
-
-
 class MultiScaleDiscriminator(nn.Module):
     """
     Ensemble of scale discriminators.
@@ -374,12 +344,6 @@ class MultiScaleDiscriminator(nn.Module):
     def remove_weight_norm(self) -> None:
         for discriminator in self.discriminators:
             discriminator.remove_weight_norm()
-
-
-@dataclass
-class VocoderDiscriminatorConfig:
-    mpd: MultiPeriodDiscriminatorConfig = field(default_factory=MultiPeriodDiscriminatorConfig)
-    msd: MultiScaleDiscriminatorConfig = field(default_factory=MultiScaleDiscriminatorConfig)
 
 
 class HiFiGANMultiDiscriminator(nn.Module):

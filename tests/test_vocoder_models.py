@@ -1,7 +1,7 @@
 import torch
 
 from src.models.vocoder_hifigan import (
-    CQTGeneratorConfig,
+    VocoderGeneratorModelConfig,
     CQTUHiFiGANGenerator,
 )
 from src.models.vocoder_discriminators import (
@@ -13,8 +13,8 @@ from src.models.vocoder_discriminators import (
 
 def test_vocoder_generator_shape_32_frames_leaky_relu():
     model = CQTUHiFiGANGenerator(
-        CQTGeneratorConfig(
-            cqt_bins=96,
+        96,
+        VocoderGeneratorModelConfig(
             upsample_initial_channel=128,
             upsample_rates=(8, 8, 4, 2),
             upsample_kernel_sizes=(16, 16, 8, 4),
@@ -31,8 +31,8 @@ def test_vocoder_generator_shape_32_frames_leaky_relu():
 
 def test_vocoder_generator_shape_32_frames_snake_beta():
     model = CQTUHiFiGANGenerator(
-        CQTGeneratorConfig(
-            cqt_bins=96,
+        96,
+        VocoderGeneratorModelConfig(
             upsample_initial_channel=128,
             activation="snake_beta",
         )
@@ -47,8 +47,8 @@ def test_vocoder_generator_shape_32_frames_snake_beta():
 
 def test_vocoder_generator_accepts_4d_cqt():
     model = CQTUHiFiGANGenerator(
-        CQTGeneratorConfig(
-            cqt_bins=96,
+        96,
+        VocoderGeneratorModelConfig(
             upsample_initial_channel=128,
         )
     )

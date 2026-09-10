@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +7,10 @@ from torch.nn.utils import remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 
 
-ActivationType = Literal["leaky_relu", "snake_beta"]
+from configs.vocoder_config import (
+    VocoderGeneratorModelConfig,
+    ActivationType, VocoderDataConfig,
+)
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -129,46 +129,16 @@ class ResBlock1D(nn.Module):
             remove_weight_norm(conv)
 
 
-@dataclass
-class CQTGeneratorConfig:
-    """
-    Default config is intentionally lightweight.
-
-    Current project CQT config:
-        cqt_bins = 96
-        hop_length = 512
-
-    Therefore:
-        upsample_rates product must equal hop_length.
-    """
-
-    cqt_bins: int = 96
-    upsample_initial_channel: int = 128
-
-    upsample_rates: tuple[int, ...] = (8, 8, 4, 2)
-    upsample_kernel_sizes: tuple[int, ...] = (16, 16, 8, 4)
-
-    resblock_kernel_sizes: tuple[int, ...] = (3, 7, 11)
-    resblock_dilation_sizes: tuple[tuple[int, ...], ...] = (
-        (1, 3, 5),
-        (1, 3, 5),
-        (1, 3, 5),
-    )
-
-    activation: ActivationType = "leaky_relu"
-    final_tanh: bool = True
-
-
 class CQTUHiFiGANGenerator(nn.Module):
     """
     Lightweight CQT-conditioned HiFi-GAN-style generator.
 
     Input:
-        [B, 96, T]
-        or [B, 1, 96, T]
+        [B, Bins, T]
+        or [B, 1, Bins, T]
 
     Output:
-        [B, 1, T * 512]
+        [B, 1, T * Hop]
 
     This is designed for the current CQT cache:
         sample_rate = 22050
@@ -176,22 +146,26 @@ class CQTUHiFiGANGenerator(nn.Module):
         n_bins = 96
     """
 
-    def __init__(self, config: CQTGeneratorConfig = CQTGeneratorConfig()) -> None:
+    def __init__(
+            self,
+            cqt_bins: int,
+            model_config: VocoderGeneratorModelConfig = VocoderGeneratorModelConfig(),
+    ) -> None:
         super().__init__()
-        self.config = config
+        self.config = model_config
 
-        if len(config.upsample_rates) != len(config.upsample_kernel_sizes):
+        if len(model_config.upsample_rates) != len(model_config.upsample_kernel_sizes):
             raise ValueError("upsample_rates and upsample_kernel_sizes must match.")
 
-        if len(config.resblock_kernel_sizes) != len(config.resblock_dilation_sizes):
+        if len(model_config.resblock_kernel_sizes) != len(model_config.resblock_dilation_sizes):
             raise ValueError(
                 "resblock_kernel_sizes and resblock_dilation_sizes must match."
             )
 
         self.conv_pre = weight_norm(
             nn.Conv1d(
-                config.cqt_bins,
-                config.upsample_initial_channel,
+                cqt_bins,
+                model_config.upsample_initial_channel,
                 kernel_size=7,
                 stride=1,
                 padding=3,
@@ -201,11 +175,11 @@ class CQTUHiFiGANGenerator(nn.Module):
         self.ups = nn.ModuleList()
         self.resblocks = nn.ModuleList()
 
-        current_channels = config.upsample_initial_channel
+        current_channels = model_config.upsample_initial_channel
 
         for upsample_rate, upsample_kernel_size in zip(
-            config.upsample_rates,
-            config.upsample_kernel_sizes,
+            model_config.upsample_rates,
+            model_config.upsample_kernel_sizes,
         ):
             next_channels = current_channels // 2
 
@@ -222,21 +196,21 @@ class CQTUHiFiGANGenerator(nn.Module):
             )
 
             for kernel_size, dilations in zip(
-                config.resblock_kernel_sizes,
-                config.resblock_dilation_sizes,
+                model_config.resblock_kernel_sizes,
+                model_config.resblock_dilation_sizes,
             ):
                 self.resblocks.append(
                     ResBlock1D(
                         channels=next_channels,
                         kernel_size=kernel_size,
                         dilations=dilations,
-                        activation=config.activation,
+                        activation=model_config.activation,
                     )
                 )
 
             current_channels = next_channels
 
-        self.activation_post = get_activation(config.activation, current_channels)
+        self.activation_post = get_activation(model_config.activation, current_channels)
 
         self.conv_post = weight_norm(
             nn.Conv1d(

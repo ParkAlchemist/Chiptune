@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.9 (ChiptuneV3)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.9 (Chiptune)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="~\AppData\Local\Programs\Python\Python313\python.exe" project-jdk-type="Python SDK" />
   <component name="PythonCompatibilityInspectionAdvertiser">
     <option name="version" value="3" />
   </component>

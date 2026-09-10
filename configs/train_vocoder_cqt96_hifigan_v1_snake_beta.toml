@@ -1,5 +1,5 @@
 [paths]
-chip_cache_root = "E:/Projects/Datasets/cache/cqt/chip"
+chip_cache_root = "C:/Datasets/cache/cqt/cqt96_sr22050_hop512/chip"
 output_root = "runs/vocoder_cqt"
 experiment_name = "cqt96_hifigan_v1_snake_beta"
 
