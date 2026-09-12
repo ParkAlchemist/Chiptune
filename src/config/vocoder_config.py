@@ -75,9 +75,7 @@ class LogConfig:
     status_every_steps: int = 50
     save_every_steps: int = 10000
     preview_every_steps: int = 10000
-    validation_every_steps: int = 10000
     preview_num_samples: int = 4
-    validation_num_samples: int = 16
     keep_numbered_checkpoints: int = 10
     tensorboard: bool = True
 

@@ -8,17 +8,19 @@ import json
 import random
 import signal
 import time
+import shutil
 from dataclasses import asdict, dataclass
 from typing import Any
+import numpy as np
+import soundfile as sf
+import torch
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import numpy as np
-import soundfile as sf
-import torch
+
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -27,9 +29,27 @@ except Exception:
 
 from src.data.vocoder_dataset import CQTVocoderDataset
 from src.models.vocoder_hifigan import (
-    CQTGeneratorConfig,
     CQTUHiFiGANGenerator,
 )
+from src.config.vocoder_config import (
+    VocoderGeneratorModelConfig,
+    VocoderDiscriminatorConfig,
+    VocoderDataConfig,
+    VocoderLossConfig,
+    ActivationType,
+    VocoderExperimentConfig,
+    RunConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    TrainingConfig,
+    LogConfig,
+    AMPConfig,
+    AugmentationConfig,
+    ControlConfig,
+)
+from src.config.vocoder_config_loader import load_vocoder_config
+from src.config.vocoder_config_validator import validate_vocoder_config
+from src.config.vocoder_config_adapter import build_loss_config
 from src.models.vocoder_discriminators import (
     HiFiGANMultiDiscriminator,
     VocoderDiscriminatorConfig,
@@ -44,55 +64,6 @@ from src.training.vocoder_step import (
     VocoderOptimizers,
     vocoder_train_step,
 )
-
-
-@dataclass
-class VocoderTrainConfig:
-    chip_cache_root: str = "E:/Projects/Datasets/cache/cqt/chip"
-    output_root: str = "runs/vocoder_cqt"
-    experiment_name: str = "cqt96_hifigan_v1"
-
-    sample_rate: int = 22050
-    hop_length: int = 512
-    cqt_bins: int = 96
-
-    segment_frames: int = 16
-    windows_per_track: int = 8
-    batch_size: int = 1
-    num_workers: int = 0
-    cache_waveforms: int = 8
-
-    epochs: int = 50
-    max_steps: int | None = None
-
-    lr_g: float = 2e-4
-    lr_d: float = 2e-4
-    beta1: float = 0.8
-    beta2: float = 0.99
-
-    lambda_adv: float = 1.0
-    lambda_feature_matching: float = 2.0
-    lambda_mrstft: float = 45.0
-
-    activation: str = "leaky_relu"
-    upsample_initial_channel: int = 128
-    discriminator_size: str = "small"
-
-    amp: bool = False
-    amp_start_step: int = 1000
-    amp_init_scale: float = 256.0
-    grad_clip_norm: float | None = 10.0
-
-    log_every_steps: int = 25
-    save_every_steps: int = 1000
-    preview_every_steps: int = 1000
-    preview_num_samples: int = 4
-
-    device: str = "cuda"
-    seed: int = 1337
-    resume: str | None = None
-
-    overfit_batches: int | None = None
 
 
 class StopController:
@@ -114,87 +85,33 @@ def set_seed(seed: int) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train CQT-conditioned vocoder.")
+    parser = argparse.ArgumentParser(
+        description="Train the CQT-conditioned vocoder."
+    )
 
-    parser.add_argument("--chip-cache-root", type=str, default="E:/Projects/Datasets/cache/cqt/chip")
-    parser.add_argument("--output-root", type=str, default="runs/vocoder_cqt")
-    parser.add_argument("--experiment-name", type=str, default="cqt96_hifigan_v1")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Structured vocoder TOML configuration.",
+    )
 
-    parser.add_argument("--sample-rate", type=int, default=22050)
-    parser.add_argument("--hop-length", type=int, default=512)
-    parser.add_argument("--cqt-bins", type=int, default=96)
-
-    parser.add_argument("--segment-frames", type=int, default=16)
-    parser.add_argument("--windows-per-track", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--cache-waveforms", type=int, default=8)
-
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--max-steps", type=int, default=None)
-
-    parser.add_argument("--lr-g", type=float, default=2e-4)
-    parser.add_argument("--lr-d", type=float, default=2e-4)
-    parser.add_argument("--beta1", type=float, default=0.8)
-    parser.add_argument("--beta2", type=float, default=0.99)
-
-    parser.add_argument("--lambda-adv", type=float, default=1.0)
-    parser.add_argument("--lambda-feature-matching", type=float, default=2.0)
-    parser.add_argument("--lambda-mrstft", type=float, default=45.0)
-
-    parser.add_argument("--activation", type=str, choices=["leaky_relu", "snake_beta"], default="leaky_relu")
-    parser.add_argument("--upsample-initial-channel", type=int, default=128)
-    parser.add_argument("--discriminator-size", type=str, choices=["small", "full"], default="small")
-
-    parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--amp-start-step", type=int, default=1000)
-    parser.add_argument("--amp-init-scale", type=float, default=256.0)
-    parser.add_argument("--grad-clip-norm", type=float, default=10.0)
-
-    parser.add_argument("--log-every-steps", type=int, default=25)
-    parser.add_argument("--save-every-steps", type=int, default=1000)
-    parser.add_argument("--preview-every-steps", type=int, default=1000)
-    parser.add_argument("--preview-num-samples", type=int, default=4)
-
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--resume", type=str, default=None)
-
-    parser.add_argument("--overfit-batches", type=int, default=None)
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Optional checkpoint from which to resume.",
+    )
 
     return parser.parse_args()
-
-
-def make_config(args: argparse.Namespace) -> VocoderTrainConfig:
-    return VocoderTrainConfig(**vars(args))
-
-
-def build_generator_config(cfg: VocoderTrainConfig) -> CQTGeneratorConfig:
-    return CQTGeneratorConfig(
-        cqt_bins=cfg.cqt_bins,
-        upsample_initial_channel=cfg.upsample_initial_channel,
-        upsample_rates=(8, 8, 4, 2),
-        upsample_kernel_sizes=(16, 16, 8, 4),
-        activation=cfg.activation,
-    )
-
-
-def build_discriminator_config(cfg: VocoderTrainConfig) -> VocoderDiscriminatorConfig:
-    if cfg.discriminator_size == "full":
-        mpd_channels = (32, 128, 512, 1024, 1024)
-    else:
-        mpd_channels = (16, 64, 256, 512, 512)
-
-    return VocoderDiscriminatorConfig(
-        mpd=MultiPeriodDiscriminatorConfig(
-            channels=mpd_channels,
-        )
-    )
 
 
 def save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+from dataclasses import asdict
 
 
 def save_checkpoint(
@@ -204,39 +121,23 @@ def save_checkpoint(
     models: VocoderModels,
     optimizers: VocoderOptimizers,
     loss_bundle: VocoderLossBundle,
-    train_config: VocoderTrainConfig,
-    generator_config: CQTGeneratorConfig,
-    discriminator_config: VocoderDiscriminatorConfig,
-    scaler: torch.amp.GradScaler | None,
+    experiment_config: VocoderExperimentConfig,
+    scaler: torch.amp.GradScaler,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    checkpoint = {
+    payload = {
         "epoch": epoch,
         "global_step": global_step,
-
         "generator": models.generator.state_dict(),
         "discriminator": models.discriminator.state_dict(),
-
-        "optimizer_generator": optimizers.generator.state_dict(),
-        "optimizer_discriminator": optimizers.discriminator.state_dict(),
-
-        "loss_config": asdict(loss_bundle.config),
-        "train_config": asdict(train_config),
-        "generator_config": asdict(generator_config),
-        "discriminator_config": {
-            "mpd_channels": discriminator_config.mpd.channels,
-            "mpd_periods": discriminator_config.mpd.periods,
-            "mpd_norm": discriminator_config.mpd.norm,
-            "msd_num_scales": discriminator_config.msd.num_scales,
-            "msd_first_norm": discriminator_config.msd.first_discriminator_norm,
-            "msd_other_norm": discriminator_config.msd.other_discriminator_norm,
-        },
-
-        "scaler": scaler.state_dict() if scaler is not None and scaler.is_enabled() else None,
+        "optimizer_g": optimizers.generator.state_dict(),
+        "optimizer_d": optimizers.discriminator.state_dict(),
+        "scaler": scaler.state_dict(),
+        "experiment_config": asdict(experiment_config),
     }
 
-    torch.save(checkpoint, path)
+    torch.save(payload, path)
 
 
 def load_checkpoint(
@@ -251,16 +152,33 @@ def load_checkpoint(
     models.generator.load_state_dict(checkpoint["generator"])
     models.discriminator.load_state_dict(checkpoint["discriminator"])
 
-    optimizers.generator.load_state_dict(checkpoint["optimizer_generator"])
-    optimizers.discriminator.load_state_dict(checkpoint["optimizer_discriminator"])
+    optimizers.generator.load_state_dict(checkpoint["optimizer_g"])
+    optimizers.discriminator.load_state_dict(checkpoint["optimizer_d"])
 
     if scaler is not None and checkpoint.get("scaler") is not None:
         scaler.load_state_dict(checkpoint["scaler"])
 
-    start_epoch = int(checkpoint["epoch"]) + 1
+    start_epoch = int(checkpoint["epoch"])
     global_step = int(checkpoint["global_step"])
 
     return start_epoch, global_step
+
+
+def prune_numbered_checkpoints(
+    checkpoint_dir: Path,
+    keep: int,
+) -> None:
+    if keep <= 0:
+        return
+
+    paths = sorted(
+        checkpoint_dir.glob("step_*.pt"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    for old_path in paths[keep:]:
+        old_path.unlink()
 
 
 def tensor_to_audio_np(x: torch.Tensor) -> np.ndarray:
@@ -351,19 +269,124 @@ def write_status(
     save_json(path, payload)
 
 
+def build_optimizer(
+    parameters,
+    config: OptimizerConfig,
+) -> torch.optim.Optimizer:
+    if config.name == "adam":
+        optimizer_class = torch.optim.Adam
+    elif config.name == "adamw":
+        optimizer_class = torch.optim.AdamW
+    else:
+        raise ValueError(
+            f"Unsupported optimizer: {config.name!r}"
+        )
+
+    return optimizer_class(
+        parameters,
+        lr=config.lr,
+        betas=(config.beta1, config.beta2),
+        weight_decay=config.weight_decay,
+        eps=config.eps,
+    )
+
+
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config: SchedulerConfig,
+):
+    if not config.enabled or config.name == "none":
+        return None
+
+    if config.name == "exponential":
+        return torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=config.gamma,
+        )
+
+    raise ValueError(
+        f"Unsupported scheduler: {config.name}"
+    )
+
+
 def main() -> None:
     args = parse_args()
-    cfg = make_config(args)
 
-    set_seed(cfg.seed)
+    config_path = args.config.expanduser()
 
-    if cfg.device == "cuda" and not torch.cuda.is_available():
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+
+    config_path = config_path.resolve()
+
+    config = load_vocoder_config(config_path)
+    validate_vocoder_config(config, check_paths=True)
+
+    from dataclasses import is_dataclass
+
+    print(
+        "Loaded experiment config:",
+        type(config),
+        f"is_dataclass={is_dataclass(config)}",
+    )
+
+    if not is_dataclass(config):
+        raise TypeError(
+            "load_vocoder_config() must return a dataclass instance. "
+            f"Got {type(config).__name__}: "
+            f"{config!r}"
+        )
+
+    run_cfg = config.run
+    data_cfg = config.data
+    generator_cfg = config.generator
+    discriminator_cfg = config.discriminator
+    optim_generator_cfg = config.optimizer_generator
+    optim_discriminator_cfg = config.optimizer_discriminator
+    scheduler_generator_cfg = config.scheduler_generator
+    scheduler_discriminator_cfg = config.scheduler_discriminator
+    loss_cfg = config.loss
+    training_cfg = config.training
+    amp_cfg = config.amp
+    augmentation_cfg = config.augmentation
+    log_cfg = config.logging
+    control_cfg = config.control
+
+    if training_cfg.gradient_accumulation_steps != 1:
+        raise NotImplementedError(
+            "Gradient accumulation is configured but has not yet "
+            "been implemented in vocoder_train_step()."
+        )
+
+    if training_cfg.generator_start_step != 0:
+        raise NotImplementedError(
+            "training.generator_start_step is not implemented yet."
+        )
+
+    if training_cfg.discriminator_start_step != 0:
+        raise NotImplementedError(
+            "training.discriminator_start_step is not implemented yet."
+        )
+
+    if training_cfg.adversarial_start_step != 0:
+        raise NotImplementedError(
+            "training.adversarial_start_step is not implemented yet."
+        )
+
+    if augmentation_cfg.enabled:
+        raise NotImplementedError(
+            "Vocoder augmentation is configured but not yet implemented."
+        )
+
+    set_seed(run_cfg.seed)
+
+    if run_cfg.device == "cuda" and not torch.cuda.is_available():
         print("CUDA requested but unavailable. Falling back to CPU.")
         device = torch.device("cpu")
     else:
-        device = torch.device(cfg.device)
+        device = torch.device(run_cfg.device)
 
-    run_dir = Path(cfg.output_root) / cfg.experiment_name
+    run_dir = Path(run_cfg.output_root) / run_cfg.experiment_name
     checkpoint_dir = run_dir / "checkpoints"
     preview_root = run_dir / "previews"
     log_dir = run_dir / "tensorboard"
@@ -372,96 +395,125 @@ def main() -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     preview_root.mkdir(parents=True, exist_ok=True)
 
-    save_json(run_dir / "config.json", asdict(cfg))
+    resolved_config_path = run_dir / "config_resolved.json"
+    source_config_path = run_dir / "config_source.toml"
 
-    writer = SummaryWriter(log_dir=str(log_dir)) if SummaryWriter is not None else None
+    if not resolved_config_path.exists():
+        save_json(resolved_config_path, asdict(config))
+
+    if not source_config_path.exists():
+        shutil.copy2(args.config, source_config_path)
+
+    writer = (
+        SummaryWriter(log_dir=str(log_dir))
+        if log_cfg.tensorboard and SummaryWriter is not None
+        else None
+    )
 
     stop_controller = StopController()
-    signal.signal(signal.SIGINT, stop_controller.request_stop)
+
+    if control_cfg.enabled:
+        signal.signal(
+            signal.SIGINT,
+            stop_controller.request_stop,
+        )
 
     print("Building datasets...")
 
     train_dataset = CQTVocoderDataset(
-        chip_cache_root=Path(cfg.chip_cache_root),
-        sample_rate=cfg.sample_rate,
-        hop_length=cfg.hop_length,
-        segment_frames=cfg.segment_frames,
-        windows_per_track=cfg.windows_per_track,
-        random_window=True,
-        cache_waveforms=cfg.cache_waveforms,
+        chip_cache_root=Path(data_cfg.chip_cache_root),
+        sample_rate=data_cfg.sample_rate,
+        hop_length=data_cfg.hop_length,
+        segment_frames=data_cfg.segment_frames,
+        windows_per_track=data_cfg.windows_per_track,
+        random_window=data_cfg.random_window,
+        cache_waveforms=data_cfg.cache_waveforms,
     )
 
     preview_dataset = CQTVocoderDataset(
-        chip_cache_root=Path(cfg.chip_cache_root),
-        sample_rate=cfg.sample_rate,
-        hop_length=cfg.hop_length,
-        segment_frames=cfg.segment_frames,
+        chip_cache_root=Path(data_cfg.chip_cache_root),
+        sample_rate=data_cfg.sample_rate,
+        hop_length=data_cfg.hop_length,
+        segment_frames=data_cfg.segment_frames,
         windows_per_track=1,
         random_window=False,
-        cache_waveforms=cfg.cache_waveforms,
+        cache_waveforms=data_cfg.cache_waveforms,
     )
 
     loader_kwargs = {
         "dataset": train_dataset,
-        "batch_size": cfg.batch_size,
+        "batch_size": data_cfg.batch_size,
         "shuffle": True,
-        "num_workers": cfg.num_workers,
-        "drop_last": True,
-        "pin_memory": device.type == "cuda",
+        "num_workers": data_cfg.num_workers,
+        "drop_last": data_cfg.drop_last,
+        "pin_memory": data_cfg.pin_memory,
     }
 
-    if cfg.num_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
+    if data_cfg.num_workers > 0:
+        loader_kwargs["persistent_workers"] = (
+            data_cfg.persistent_workers
+        )
+        loader_kwargs["prefetch_factor"] = (
+            data_cfg.prefetch_factor
+        )
 
     train_loader = DataLoader(**loader_kwargs)
 
-    if cfg.overfit_batches is not None:
-        print(f"Overfit mode enabled: using first {cfg.overfit_batches} batches repeatedly.")
+    if training_cfg.overfit_batches > 0:
+        print(
+            "Overfit mode enabled: using first "
+            f"{training_cfg.overfit_batches} batches repeatedly."
+        )
 
-        overfit_batches = []
+        overfit_batches: list[dict] = []
         iterator = iter(train_loader)
 
-        for _ in range(cfg.overfit_batches):
-            overfit_batches.append(next(iterator))
-
+        for _ in range(training_cfg.overfit_batches):
+            try:
+                overfit_batches.append(next(iterator))
+            except StopIteration as exc:
+                raise RuntimeError(
+                    "The training loader did not contain enough batches "
+                    f"for overfit_batches={training_cfg.overfit_batches}."
+                ) from exc
     else:
         overfit_batches = None
 
     if overfit_batches is not None:
-        debug_dir = run_dir / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
+        if len(overfit_batches) > 0:
+            debug_dir = run_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
 
-        overfit_path = debug_dir / "overfit_batches.pt"
-        torch.save(overfit_batches, overfit_path)
+            overfit_path = debug_dir / "overfit_batches.pt"
+            torch.save(overfit_batches, overfit_path)
 
-        print(f"Saved fixed overfit batches: {overfit_path}")
+            print(f"Saved fixed overfit batches: {overfit_path}")
 
-        metadata_rows = []
+            metadata_rows = []
 
-        for batch_idx, batch in enumerate(overfit_batches):
-            batch_size = int(batch["cqt"].shape[0])
+            for batch_idx, batch in enumerate(overfit_batches):
+                batch_size = int(batch["cqt"].shape[0])
 
-            for item_idx in range(batch_size):
-                metadata_rows.append(
-                    {
-                        "batch_index": batch_idx,
-                        "item_index": item_idx,
-                        "source_path": batch.get("source_path", [""])[
-                            item_idx],
-                        "frame_start": int(batch["frame_start"][item_idx]),
-                        "frame_end": int(batch["frame_end"][item_idx]),
-                        "sample_start": int(batch["sample_start"][item_idx]),
-                        "sample_end": int(batch["sample_end"][item_idx]),
-                    }
-                )
+                for item_idx in range(batch_size):
+                    metadata_rows.append(
+                        {
+                            "batch_index": batch_idx,
+                            "item_index": item_idx,
+                            "source_path": batch.get("source_path", [""])[
+                                item_idx],
+                            "frame_start": int(batch["frame_start"][item_idx]),
+                            "frame_end": int(batch["frame_end"][item_idx]),
+                            "sample_start": int(batch["sample_start"][item_idx]),
+                            "sample_end": int(batch["sample_end"][item_idx]),
+                        }
+                    )
 
-        with (debug_dir / "overfit_batches_metadata.json").open("w",
-                                                                encoding="utf-8") as f:
-            json.dump(metadata_rows, f, indent=2, ensure_ascii=False)
+            with (debug_dir / "overfit_batches_metadata.json").open("w",
+                                                                    encoding="utf-8") as f:
+                json.dump(metadata_rows, f, indent=2, ensure_ascii=False)
 
-        print(
-            f"Saved fixed overfit metadata: {debug_dir / 'overfit_batches_metadata.json'}")
+            print(
+                f"Saved fixed overfit metadata: {debug_dir / 'overfit_batches_metadata.json'}")
 
 
     preview_loader = DataLoader(
@@ -470,16 +522,13 @@ def main() -> None:
         shuffle=False,
         num_workers=0,
         drop_last=False,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(device.type == "cuda" and data_cfg.pin_memory),
     )
 
     print("Building models...")
 
-    generator_config = build_generator_config(cfg)
-    discriminator_config = build_discriminator_config(cfg)
-
-    generator = CQTUHiFiGANGenerator(generator_config).to(device)
-    discriminator = HiFiGANMultiDiscriminator(discriminator_config).to(device)
+    generator = CQTUHiFiGANGenerator(data_cfg.cqt_bins, generator_cfg).to(device)
+    discriminator = HiFiGANMultiDiscriminator(discriminator_cfg).to(device)
 
     models = VocoderModels(
         generator=generator,
@@ -487,40 +536,58 @@ def main() -> None:
     )
 
     optimizers = VocoderOptimizers(
-        generator=torch.optim.AdamW(
+        generator=build_optimizer(
             generator.parameters(),
-            lr=cfg.lr_g,
-            betas=(cfg.beta1, cfg.beta2),
-            weight_decay=0.0,
+            optim_generator_cfg,
         ),
-        discriminator=torch.optim.AdamW(
+        discriminator=build_optimizer(
             discriminator.parameters(),
-            lr=cfg.lr_d,
-            betas=(cfg.beta1, cfg.beta2),
-            weight_decay=0.0,
+            optim_discriminator_cfg,
         ),
     )
 
+    scheduler_g = build_scheduler(
+        optimizers.generator,
+        config.scheduler_generator,
+    )
+
+    scheduler_d = build_scheduler(
+        optimizers.discriminator,
+        config.scheduler_discriminator,
+    )
+
+    model_loss_config = build_loss_config(config)
+
     loss_bundle = VocoderLossBundle(
-        VocoderLossConfig(
-            lambda_adv=cfg.lambda_adv,
-            lambda_feature_matching=cfg.lambda_feature_matching,
-            lambda_mrstft=cfg.lambda_mrstft,
-        )
+        model_loss_config
     ).to(device)
+
+    scaler_enabled = (
+            amp_cfg.enabled
+            and device.type == "cuda"
+    )
 
     scaler = torch.amp.GradScaler(
         "cuda",
-        enabled=(cfg.amp and device.type == "cuda"),
-        init_scale=cfg.amp_init_scale,
-        growth_interval=2000,
+        enabled=scaler_enabled,
+        init_scale=amp_cfg.initial_scale,
+        growth_interval=amp_cfg.growth_interval,
     )
 
     start_epoch = 0
     global_step = 0
 
-    if cfg.resume is not None:
-        resume_path = Path(cfg.resume)
+    resume_path: Path | None = None
+
+    if args.resume is not None:
+        resume_path = args.resume.expanduser()
+
+        if not resume_path.is_absolute():
+            resume_path = PROJECT_ROOT / resume_path
+
+        resume_path = resume_path.resolve()
+
+    if resume_path is not None:
         print(f"Resuming from: {resume_path}")
         start_epoch, global_step = load_checkpoint(
             resume_path,
@@ -535,15 +602,19 @@ def main() -> None:
     print(f"Run dir: {run_dir}")
     print(f"Device: {device}")
     print(f"Train batches per epoch: {len(train_loader)}")
-    print(f"Segment frames: {cfg.segment_frames}")
-    print(f"Segment samples: {cfg.segment_frames * cfg.hop_length}")
-    print(f"AMP enabled after step: {cfg.amp_start_step if cfg.amp else 'disabled'}")
+    print(f"Segment frames: {data_cfg.segment_frames}")
+    print(f"Segment samples: {data_cfg.segment_frames * data_cfg.hop_length}")
+    print(f"AMP enabled after step: {amp_cfg.start_step if amp_cfg.enabled else 'disabled'}")
 
     latest_checkpoint_path: str | None = None
     latest_preview_path: str | None = None
 
+    torch.autograd.set_detect_anomaly(
+        training_cfg.detect_anomaly
+    )
+
     try:
-        for epoch in range(start_epoch, cfg.epochs):
+        for epoch in range(start_epoch, training_cfg.epochs):
             generator.train()
             discriminator.train()
 
@@ -551,7 +622,7 @@ def main() -> None:
 
             progress = tqdm(
                 epoch_iterable,
-                desc=f"Epoch {epoch + 1}/{cfg.epochs}",
+                desc=f"Epoch {epoch + 1}/{training_cfg.epochs}",
                 leave=True,
             )
 
@@ -559,9 +630,9 @@ def main() -> None:
                 global_step += 1
 
                 use_amp_now = bool(
-                    cfg.amp
+                    amp_cfg.enabled
                     and device.type == "cuda"
-                    and global_step >= cfg.amp_start_step
+                    and global_step >= amp_cfg.start_step
                 )
 
                 losses = vocoder_train_step(
@@ -572,26 +643,39 @@ def main() -> None:
                     device=device,
                     use_amp=use_amp_now,
                     scaler=scaler if use_amp_now else None,
-                    grad_clip_norm=cfg.grad_clip_norm,
+                    dtype=amp_cfg.dtype,
+                    grad_clip_generator=training_cfg.grad_clip_generator,
+                    grad_clip_discriminator=training_cfg.grad_clip_discriminator,
                 )
 
                 if not all(np.isfinite(v) for v in losses.values()):
-                    emergency_path = checkpoint_dir / f"nonfinite_step_{global_step:09d}.pt"
-                    save_checkpoint(
-                        emergency_path,
-                        epoch,
-                        global_step,
-                        models,
-                        optimizers,
-                        loss_bundle,
-                        cfg,
-                        generator_config,
-                        discriminator_config,
-                        scaler,
+                    emergency_path = (
+                            checkpoint_dir
+                            / f"nonfinite_step_{global_step:09d}.pt"
                     )
-                    raise RuntimeError(f"Non-finite loss detected. Saved {emergency_path}")
 
-                if writer is not None and global_step % cfg.log_every_steps == 0:
+                    save_checkpoint(
+                        path=emergency_path,
+                        epoch=epoch,
+                        global_step=global_step,
+                        models=models,
+                        optimizers=optimizers,
+                        loss_bundle=loss_bundle,
+                        experiment_config=config,
+                        scaler=scaler,
+                    )
+
+                    message = (
+                        "Non-finite loss detected. "
+                        f"Saved {emergency_path}"
+                    )
+
+                    if training_cfg.fail_on_nonfinite:
+                        raise RuntimeError(message)
+
+                    print(f"\nWARNING: {message}")
+
+                if writer is not None and global_step % log_cfg.log_every_steps == 0:
                     for key, value in losses.items():
                         writer.add_scalar(key, value, global_step)
 
@@ -606,55 +690,56 @@ def main() -> None:
                     }
                 )
 
-                if global_step % cfg.save_every_steps == 0:
+                if global_step % log_cfg.save_every_steps == 0:
 
-                    if cfg.overfit_batches is None:
-                        checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
-                        save_checkpoint(
-                            checkpoint_path,
-                            epoch,
-                            global_step,
-                            models,
-                            optimizers,
-                            loss_bundle,
-                            cfg,
-                            generator_config,
-                            discriminator_config,
-                            scaler,
-                        )
-                        latest_checkpoint_path = str(checkpoint_path)
-                        print(f"\nSaved checkpoint: {str(latest_checkpoint_path)}")
+                    checkpoint_path = checkpoint_dir / f"step_{global_step:09d}.pt"
+                    save_checkpoint(
+                        path=checkpoint_path,
+                        epoch=epoch,
+                        global_step=global_step,
+                        models=models,
+                        optimizers=optimizers,
+                        loss_bundle=loss_bundle,
+                        experiment_config=config,
+                        scaler=scaler,
+                    )
+                    latest_checkpoint_path = str(checkpoint_path)
+                    print(f"\nSaved checkpoint: {str(latest_checkpoint_path)}")
+
+                    prune_numbered_checkpoints(
+                        checkpoint_dir,
+                        log_cfg.keep_numbered_checkpoints,
+                    )
 
                     latest_path = checkpoint_dir / "latest.pt"
                     save_checkpoint(
-                        latest_path,
-                        epoch,
-                        global_step,
-                        models,
-                        optimizers,
-                        loss_bundle,
-                        cfg,
-                        generator_config,
-                        discriminator_config,
-                        scaler,
+                        path=latest_path,
+                        epoch=epoch,
+                        global_step=global_step,
+                        models=models,
+                        optimizers=optimizers,
+                        loss_bundle=loss_bundle,
+                        experiment_config=config,
+                        scaler=scaler,
                     )
+                    latest_checkpoint_path = str(latest_path)
 
-                if cfg.preview_every_steps > 0 and global_step % cfg.preview_every_steps == 0:
+                if log_cfg.preview_every_steps > 0 and global_step % log_cfg.preview_every_steps == 0:
                     preview_dir = preview_root / f"step_{global_step:09d}"
                     export_preview_wavs(
                         preview_dir=preview_dir,
                         generator=generator,
                         preview_loader=epoch_iterable if overfit_batches is not None else preview_loader,
                         device=device,
-                        sample_rate=cfg.sample_rate,
-                        num_samples=cfg.preview_num_samples,
+                        sample_rate=data_cfg.sample_rate,
+                        num_samples=log_cfg.preview_num_samples,
                         use_amp=use_amp_now,
                     )
 
                     latest_preview_path = str(preview_dir)
                     print(f"\nSaved preview WAVs: {preview_dir}")
 
-                if global_step % cfg.log_every_steps == 0:
+                if log_cfg.status_every_steps > 0 and global_step % log_cfg.status_every_steps == 0:
                     write_status(
                         run_dir / "status.json",
                         epoch=epoch,
@@ -664,71 +749,48 @@ def main() -> None:
                         latest_preview=latest_preview_path,
                     )
 
-                if cfg.max_steps is not None and global_step >= cfg.max_steps:
+                if training_cfg.max_steps is not None and global_step >= training_cfg.max_steps:
                     print("Reached max_steps.")
                     stop_controller.stop_requested = True
 
                 if stop_controller.stop_requested:
                     raise KeyboardInterrupt
 
-            if cfg.overfit_batches is None:
-                epoch_path = checkpoint_dir / f"epoch_{epoch + 1:04d}.pt"
-                save_checkpoint(
-                    epoch_path,
-                    epoch,
-                    global_step,
-                    models,
-                    optimizers,
-                    loss_bundle,
-                    cfg,
-                    generator_config,
-                    discriminator_config,
-                    scaler,
-                )
-                print(f"Saved epoch checkpoint: {epoch_path}")
-
-
             latest_path = checkpoint_dir / "latest.pt"
             save_checkpoint(
-                latest_path,
-                epoch,
-                global_step,
-                models,
-                optimizers,
-                loss_bundle,
-                cfg,
-                generator_config,
-                discriminator_config,
-                scaler,
+                path=latest_path,
+                epoch=epoch,
+                global_step=global_step,
+                models=models,
+                optimizers=optimizers,
+                loss_bundle=loss_bundle,
+                experiment_config=config,
+                scaler=scaler,
             )
 
     except KeyboardInterrupt:
         stop_path = checkpoint_dir / f"stop_step_{global_step:09d}.pt"
         save_checkpoint(
-            stop_path,
-            epoch,
-            global_step,
-            models,
-            optimizers,
-            loss_bundle,
-            cfg,
-            generator_config,
-            discriminator_config,
-            scaler,
+            path=stop_path,
+            epoch=epoch,
+            global_step=global_step,
+            models=models,
+            optimizers=optimizers,
+            loss_bundle=loss_bundle,
+            experiment_config=config,
+            scaler=scaler,
         )
 
         latest_path = checkpoint_dir / "latest.pt"
         save_checkpoint(
-            latest_path,
-            epoch,
-            global_step,
-            models,
-            optimizers,
-            loss_bundle,
-            cfg,
-            generator_config,
-            discriminator_config,
-            scaler,
+            path=latest_path,
+            epoch=epoch,
+            global_step=global_step,
+            models=models,
+            optimizers=optimizers,
+            loss_bundle=loss_bundle,
+            experiment_config=config,
+            scaler=scaler,
         )
 
         print(f"\nTraining stopped cleanly. Saved: {stop_path}")

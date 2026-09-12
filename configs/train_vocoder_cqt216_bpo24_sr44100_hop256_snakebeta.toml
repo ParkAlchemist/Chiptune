@@ -5,8 +5,6 @@ experiment_name = "cqt216_sr44100_hop256_bpo24_snakebeta"
 output_root = "runs/vocoder_cqt"
 seed = 1337
 device = "cuda"
-resume = ""
-max_steps = 2000000
 
 [data]
 chip_cache_root = "C:/Datasets/cache/cqt/cqt216_sr44100_hop256_bpo24/chip"
@@ -18,7 +16,7 @@ fmin = 32.70319566
 
 segment_frames = 128
 windows_per_track = 8
-batch_size = 4
+batch_size = 8
 num_workers = 4
 cache_waveforms = 16
 pin_memory = true
@@ -55,12 +53,8 @@ upsample_kernel_size = 12
 downsample_kernel_size = 12
 
 [discriminator]
-preset = "small"
 use_mpd = true
 use_msd = true
-use_mrd = false
-use_cqt_discriminator = false
-use_spectral_norm = false
 
 [discriminator.mpd]
 periods = [2, 3, 5, 7, 11]
@@ -73,26 +67,11 @@ num_scales = 3
 pool_kernel_size = 4
 pool_stride = 2
 pool_padding = 2
-first_norm = "spectral"
-other_norm = "weight"
-
-[discriminator.mrd]
-resolutions = [
-    [2048, 512, 2048],
-    [1024, 256, 1024],
-    [512, 128, 512],
-    [256, 64, 256],
-]
-use_complex_input = false
 
 [loss]
 lambda_adversarial = 1.0
 lambda_feature_matching = 2.0
 lambda_mrstft = 45.0
-lambda_complex_stft = 0.0
-lambda_waveform = 0.0
-lambda_derivative = 0.0
-lambda_dc = 0.0
 
 [loss.mrstft]
 fft_sizes = [256, 512, 1024, 2048]
@@ -102,16 +81,9 @@ spectral_convergence_weight = 1.0
 log_magnitude_weight = 1.0
 eps = 1e-7
 
-[loss.complex_stft]
-enabled = false
-fft_sizes = [512, 1024, 2048]
-hop_sizes = [128, 256, 512]
-win_lengths = [512, 1024, 2048]
-normalize_complex = true
-
 [optimizer.generator]
 name = "adamw"
-learning_rate = 0.0002
+lr = 0.0002
 beta1 = 0.8
 beta2 = 0.99
 weight_decay = 0.0
@@ -119,7 +91,7 @@ eps = 1e-8
 
 [optimizer.discriminator]
 name = "adamw"
-learning_rate = 0.0002
+lr = 0.0001
 beta1 = 0.8
 beta2 = 0.99
 weight_decay = 0.0
@@ -169,9 +141,7 @@ log_every_steps = 50
 status_every_steps = 50
 save_every_steps = 10000
 preview_every_steps = 10000
-validation_every_steps = 10000
 preview_num_samples = 4
-validation_num_samples = 16
 keep_numbered_checkpoints = 10
 tensorboard = true
 

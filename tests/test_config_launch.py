@@ -1,55 +1,107 @@
-from src.utils.config_launch import (
-    flatten_config,
-    value_to_cli_args,
-    config_to_cli_args,
+from pathlib import Path
+
+from scripts.train.run_vocoder_train_config import (
+    build_run_command,
+)
+
+from scripts.train.resume_vocoder_train_config import (
+    build_resume_command,
+)
+
+from src.training.checkpoint_paths import (
+    resolve_checkpoint_selector,
 )
 
 
-def test_flatten_config():
-    config = {
-        "paths": {
-            "output_root": "runs",
-            "experiment_name": "test",
-        },
-        "training": {
-            "batch_size": 4,
-            "amp": True,
-        },
-    }
+def test_build_vocoder_run_command():
+    command = build_run_command(
+        python_executable="python",
+        train_script=Path("train_vocoder.py"),
+        config_path=Path("config.toml"),
+    )
 
-    flat = flatten_config(config)
-
-    assert flat["output_root"] == "runs"
-    assert flat["experiment_name"] == "test"
-    assert flat["batch_size"] == 4
-    assert flat["amp"] is True
+    assert command == [
+        "python",
+        "train_vocoder.py",
+        "--config",
+        "config.toml",
+    ]
 
 
-def test_value_to_cli_args_bool_true():
-    assert value_to_cli_args("amp", True) == ["--amp"]
+def test_build_vocoder_resume_command():
+    command = build_resume_command(
+        python_executable="python",
+        train_script=Path("train_vocoder.py"),
+        config_path=Path("config.toml"),
+        checkpoint_path=Path("latest.pt"),
+    )
+
+    assert command == [
+        "python",
+        "train_vocoder.py",
+        "--config",
+        "config.toml",
+        "--resume",
+        "latest.pt",
+    ]
 
 
-def test_value_to_cli_args_bool_false():
-    assert value_to_cli_args("amp", False) == []
+def test_latest_checkpoint_prefers_latest_pt(
+    tmp_path: Path,
+):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+
+    latest = checkpoint_dir / "latest.pt"
+    latest.write_bytes(b"latest")
+
+    numbered = checkpoint_dir / "step_000000100.pt"
+    numbered.write_bytes(b"numbered")
+
+    resolved = resolve_checkpoint_selector(
+        checkpoint_dir,
+        "latest",
+        project_root=tmp_path,
+    )
+
+    assert resolved == latest.resolve()
 
 
-def test_value_to_cli_args_scalar():
-    assert value_to_cli_args("batch_size", 2) == ["--batch-size", "2"]
+def test_latest_checkpoint_falls_back_to_highest_step(
+    tmp_path: Path,
+):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+
+    low = checkpoint_dir / "step_000000100.pt"
+    high = checkpoint_dir / "step_000000500.pt"
+
+    low.write_bytes(b"low")
+    high.write_bytes(b"high")
+
+    resolved = resolve_checkpoint_selector(
+        checkpoint_dir,
+        "latest",
+        project_root=tmp_path,
+    )
+
+    assert resolved == high.resolve()
 
 
-def test_config_to_cli_args_contains_expected_values():
-    config = {
-        "data": {
-            "batch_size": 2,
-        },
-        "amp": {
-            "amp": False,
-        },
-    }
+def test_resolve_checkpoint_step_selector(
+    tmp_path: Path,
+):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
 
-    args = config_to_cli_args(config)
+    expected = checkpoint_dir / "step_000001234.pt"
+    expected.write_bytes(b"checkpoint")
 
-    assert "--batch-size" in args
-    assert "2" in args
-    assert "--amp" not in args
+    resolved = resolve_checkpoint_selector(
+        checkpoint_dir,
+        "step:1234",
+        project_root=tmp_path,
+    )
+
+    assert resolved == expected.resolve()
 

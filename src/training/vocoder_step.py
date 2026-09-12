@@ -40,13 +40,15 @@ def vocoder_train_step(
     device: torch.device,
     use_amp: bool = False,
     scaler: torch.amp.GradScaler | None = None,
-    grad_clip_norm: float | None = None,
+    dtype: str = "float16",
+    grad_clip_generator: float | None = None,
+    grad_clip_discriminator: float | None = None,
 ) -> dict[str, float]:
     """
     One HiFi-GAN-style vocoder training step.
 
     Batch:
-        cqt:   [B, 96, T]
+        cqt:   [B, Bins, T]
         audio: [B, 1, T * hop_length]
 
     Update order:
@@ -74,8 +76,15 @@ def vocoder_train_step(
     if amp_enabled and scaler is None:
         raise ValueError("AMP is enabled, but scaler is None.")
 
+    if dtype == "float16":
+        torch_dtype = torch.float16
+    elif dtype == "float32":
+        torch_dtype = torch.float32
+    else:
+        raise ValueError(f"dtype {dtype} not supported.")
+
     autocast_context = (
-        torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+        torch.amp.autocast(device_type="cuda", dtype=torch_dtype)
         if amp_enabled
         else nullcontext()
     )
@@ -107,21 +116,21 @@ def vocoder_train_step(
 
         scaler.scale(d_losses.total).backward()
 
-        if grad_clip_norm is not None:
+        if grad_clip_discriminator is not None:
             scaler.unscale_(optimizers.discriminator)
             torch.nn.utils.clip_grad_norm_(
                 discriminator.parameters(),
-                max_norm=grad_clip_norm,
+                max_norm=grad_clip_discriminator,
             )
 
         scaler.step(optimizers.discriminator)
     else:
         d_losses.total.backward()
 
-        if grad_clip_norm is not None:
+        if grad_clip_discriminator is not None:
             torch.nn.utils.clip_grad_norm_(
                 discriminator.parameters(),
-                max_norm=grad_clip_norm,
+                max_norm=grad_clip_discriminator,
             )
 
         optimizers.discriminator.step()
@@ -153,11 +162,11 @@ def vocoder_train_step(
 
         scaler.scale(g_losses.total).backward()
 
-        if grad_clip_norm is not None:
+        if grad_clip_generator is not None:
             scaler.unscale_(optimizers.generator)
             torch.nn.utils.clip_grad_norm_(
                 generator.parameters(),
-                max_norm=grad_clip_norm,
+                max_norm=grad_clip_generator,
             )
 
         scaler.step(optimizers.generator)
@@ -165,10 +174,10 @@ def vocoder_train_step(
     else:
         g_losses.total.backward()
 
-        if grad_clip_norm is not None:
+        if grad_clip_generator is not None:
             torch.nn.utils.clip_grad_norm_(
                 generator.parameters(),
-                max_norm=grad_clip_norm,
+                max_norm=grad_clip_generator,
             )
 
         optimizers.generator.step()
