@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,10 +20,17 @@ def get_padding(kernel_size: int, dilation: int = 1) -> int:
 
 class SnakeBeta(nn.Module):
     """
-    Lightweight SnakeBeta activation for [B, C, T] tensors.
+    Channel-wise SnakeBeta activation for [B, C, T] tensors.
 
     Formula:
-        x + (1 / beta) * sin(alpha * x)^2
+        y = x + sin(alpha * x)^2 / beta
+
+    When alpha_logscale=True, the learnable parameters store:
+
+        alpha_parameter = log(alpha_effective)
+        beta_parameter = log(beta_effective)
+
+    and the effective positive values are recovered with exp().
     """
 
     def __init__(
@@ -29,17 +38,95 @@ class SnakeBeta(nn.Module):
         channels: int,
         alpha: float = 1.0,
         beta: float = 1.0,
+        alpha_logscale: bool = True,
         eps: float = 1e-9,
     ) -> None:
         super().__init__()
 
-        self.alpha = nn.Parameter(torch.ones(1, channels, 1) * alpha)
-        self.beta = nn.Parameter(torch.ones(1, channels, 1) * beta)
+        if channels <= 0:
+            raise ValueError(
+                f"channels must be positive, got {channels}."
+            )
+
+        if alpha <= 0.0:
+            raise ValueError(
+                f"alpha must be positive, got {alpha}."
+            )
+
+        if beta <= 0.0:
+            raise ValueError(
+                f"beta must be positive, got {beta}."
+            )
+
+        if eps <= 0.0:
+            raise ValueError(
+                f"eps must be positive, got {eps}."
+            )
+
+        self.channels = channels
+        self.alpha_logscale = alpha_logscale
         self.eps = eps
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        sin_term = torch.sin(self.alpha * x)
-        return x + sin_term.mul(sin_term) / (self.beta.abs() + self.eps)
+        if alpha_logscale:
+            alpha_parameter = math.log(alpha)
+            beta_parameter = math.log(beta)
+        else:
+            alpha_parameter = alpha
+            beta_parameter = beta
+
+        self.alpha = nn.Parameter(
+            torch.full(
+                (1, channels, 1),
+                fill_value=alpha_parameter,
+                dtype=torch.float32,
+            )
+        )
+
+        self.beta = nn.Parameter(
+            torch.full(
+                (1, channels, 1),
+                fill_value=beta_parameter,
+                dtype=torch.float32,
+            )
+        )
+
+    def effective_parameters(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return the positive values used by the activation.
+        """
+        if self.alpha_logscale:
+            alpha = torch.exp(self.alpha)
+            beta = torch.exp(self.beta)
+        else:
+            alpha = self.alpha
+            beta = self.beta.abs()
+
+        return alpha, beta
+
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError(
+                "SnakeBeta expects a [B,C,T] tensor, "
+                f"got shape {tuple(x.shape)}."
+            )
+
+        if x.shape[1] != self.channels:
+            raise ValueError(
+                "SnakeBeta channel mismatch: "
+                f"configured for {self.channels} channels, "
+                f"received {x.shape[1]}."
+            )
+
+        alpha, beta = self.effective_parameters()
+
+        sin_term = torch.sin(alpha * x)
+
+        return x + sin_term.square() / (beta + self.eps)
 
 
 def get_activation(

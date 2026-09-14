@@ -333,6 +333,28 @@ def _validate_generator_config(
             errors=errors,
         )
 
+        if alias_free.upsample_ratio != alias_free.downsample_ratio:
+            errors.append(
+                "Alias-free activation currently requires equal "
+                "upsample and downsample ratios."
+            )
+
+        if alias_free.upsample_ratio < 2:
+            errors.append(
+                "Alias-free activation upsample_ratio must be at "
+                "least 2 when enabled."
+            )
+
+        if alias_free.upsample_kernel_size < 4:
+            errors.append(
+                "Alias-free upsample kernel must have at least 4 taps."
+            )
+
+        if alias_free.downsample_kernel_size < 4:
+            errors.append(
+                "Alias-free downsample kernel must have at least 4 taps."
+            )
+
 
 def _validate_discriminator_config(
     config: VocoderExperimentConfig,

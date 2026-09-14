@@ -40,7 +40,7 @@ final_tanh = true
 use_weight_norm = true
 
 [generator.snake_beta]
-alpha_logscale = true
+alpha_logscale = false
 alpha_initial = 1.0
 beta_initial = 1.0
 
