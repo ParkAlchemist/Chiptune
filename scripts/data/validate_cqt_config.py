@@ -88,3 +88,13 @@ if __name__ == "__main__":
         test_seconds=10.0,
     )
 
+    validate_cqt_configuration(
+        sample_rate=44100,
+        hop_length=256,
+        fmin_hz=float(librosa.note_to_hz("A0")),
+        n_bins=116,
+        bins_per_octave=12,
+        filter_scale=1.0,
+        test_seconds=10.0,
+    )
+

@@ -145,6 +145,19 @@ class AliasFreeConfig:
     downsample_kernel_size: int = 12
 
 
+class ECAConfig:
+    enabled: bool = False
+
+    # 0 == Adaptive
+    kernel_size: int = 0
+
+    gamma: float = 2.0
+    beta: float = 1.0
+    minimum_kernel_size: int = 3
+
+    residual: bool = False
+
+
 @dataclass
 class VocoderGeneratorModelConfig:
     activation: ActivationType = "snake_beta"
@@ -165,6 +178,8 @@ class VocoderGeneratorModelConfig:
 
     snake_beta: SnakeBetaConfig = field(default_factory=SnakeBetaConfig)
     alias_free: AliasFreeConfig = field(default_factory=AliasFreeConfig)
+
+    eca: ECAConfig = field(default_factory=ECAConfig)
 
 
 @dataclass

@@ -6,7 +6,7 @@ from src.models.blocks.upsample_block import UpsampleBlock
 from src.models.blocks.residual_block import ResidualBlock
 from src.models.blocks.spatial_self_attention import SpatialSelfAttention
 from src.models.blocks.patch_discriminator_block import PatchDiscriminatorBlock
-from src.models.blocks.squeeze_excite_block import SqueezeExciteBlock
+from src.models.blocks.channel_attention import SqueezeExciteBlock
 from src.models.model_utils import CQTBufferPad, get_padding_layer
 
 

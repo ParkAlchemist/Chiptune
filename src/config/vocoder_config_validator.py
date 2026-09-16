@@ -355,6 +355,29 @@ def _validate_generator_config(
                 "Alias-free downsample kernel must have at least 4 taps."
             )
 
+    eca = generator.eca
+    if eca.enabled:
+        if eca.kernel_size < 0:
+            errors.append(
+                "eca.kernel_size must be 0 for adaptive sizing or a positive odd integer."
+            )
+
+        if eca.kernel_size > 0 and eca.kernel_size % 2 == 0:
+            errors.append(
+                f"eca.kernel_size must be odd when explicitly set."
+            )
+
+        if eca.gamma <= 0.0:
+            errors.append(
+                f"eca.gamma must be positive."
+            )
+
+        if eca.minimum_kernel_size <= 0 or eca.minimum_kernel_size % 2 == 0:
+            errors.append(
+                f"eca.minimum_kernel_size must be a positive "
+                "odd integer."
+            )
+
 
 def _validate_discriminator_config(
     config: VocoderExperimentConfig,

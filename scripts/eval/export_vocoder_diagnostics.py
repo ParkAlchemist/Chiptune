@@ -22,8 +22,10 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.data.vocoder_dataset import CQTVocoderDataset
+from src.config.vocoder_config import (
+    VocoderExperimentConfig,
+)
 from src.models.vocoder_hifigan import (
-    CQTGeneratorConfig,
     CQTUHiFiGANGenerator,
 )
 from src.losses.vocoder_losses import (
@@ -130,9 +132,9 @@ def build_generator_from_checkpoint(
             )
         cfg_dict["activation"] = activation_override
 
-    config = CQTGeneratorConfig(**cfg_dict)
+    config = VocoderExperimentConfig(**cfg_dict)
 
-    generator = CQTUHiFiGANGenerator(config).to(device)
+    generator = CQTUHiFiGANGenerator(config.data.cqt_bins, config.generator).to(device)
     generator.load_state_dict(checkpoint["generator"], strict=True)
     generator.eval()
 

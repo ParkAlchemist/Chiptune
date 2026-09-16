@@ -11,7 +11,16 @@ from torch.nn.utils.parametrizations import weight_norm
 
 from src.config.vocoder_config import (
     VocoderGeneratorModelConfig,
-    ActivationType, )
+    ActivationType, SnakeBetaConfig, AliasFreeConfig,
+)
+
+from src.models.alias_free import (
+    AliasFreeActivation1d,
+)
+
+from src.models.blocks.channel_attention import (
+    ECABlock1d,
+)
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -132,12 +141,30 @@ class SnakeBeta(nn.Module):
 def get_activation(
     activation: ActivationType,
     channels: int,
+    snake_beta_config: SnakeBetaConfig,
+    alias_free_config: AliasFreeConfig,
 ) -> nn.Module:
     if activation == "leaky_relu":
         return nn.LeakyReLU(0.1)
 
     if activation == "snake_beta":
-        return SnakeBeta(channels)
+
+        module = SnakeBeta(
+            channels=channels,
+            alpha=snake_beta_config.alpha_initial,
+            beta=snake_beta_config.beta_initial,
+            alpha_logscale=snake_beta_config.alpha_logscale,
+        )
+
+        if alias_free_config.enabled:
+            return AliasFreeActivation1d(
+                activation=module,
+                upsample_ratio=alias_free_config.upsample_ratio,
+                downsample_ratio=alias_free_config.downsample_ratio,
+                upsample_kernel_size=alias_free_config.upsample_kernel_size,
+                downsample_kernel_size=alias_free_config.downsample_kernel_size,
+            )
+        return module
 
     raise ValueError(f"Unknown activation: {activation}")
 
@@ -156,6 +183,8 @@ class ResBlock1D(nn.Module):
         kernel_size: int,
         dilations: tuple[int, ...],
         activation: ActivationType = "leaky_relu",
+        snake_beta_config: SnakeBetaConfig = SnakeBetaConfig(),
+        alias_free_config: AliasFreeConfig = AliasFreeConfig(),
     ) -> None:
         super().__init__()
 
@@ -165,7 +194,7 @@ class ResBlock1D(nn.Module):
         self.acts2 = nn.ModuleList()
 
         for dilation in dilations:
-            self.acts1.append(get_activation(activation, channels))
+            self.acts1.append(get_activation(activation, channels, snake_beta_config, alias_free_config))
             self.convs1.append(
                 weight_norm(
                     nn.Conv1d(
@@ -179,7 +208,7 @@ class ResBlock1D(nn.Module):
                 )
             )
 
-            self.acts2.append(get_activation(activation, channels))
+            self.acts2.append(get_activation(activation, channels, snake_beta_config, alias_free_config))
             self.convs2.append(
                 weight_norm(
                     nn.Conv1d(
@@ -259,6 +288,7 @@ class CQTUHiFiGANGenerator(nn.Module):
         )
 
         self.ups = nn.ModuleList()
+        self.mrf_ecas = nn.ModuleList()
         self.resblocks = nn.ModuleList()
 
         current_channels = model_config.upsample_initial_channel
@@ -294,9 +324,23 @@ class CQTUHiFiGANGenerator(nn.Module):
                     )
                 )
 
+            if model_config.eca.enabled:
+                self.mrf_ecas.append(
+                    ECABlock1d(
+                        channels=next_channels,
+                        kernel_size=model_config.eca.kernel_size,
+                        gamma=model_config.eca.gamma,
+                        beta=model_config.eca.beta,
+                        minimum_kernel_size=model_config.eca.minimum_kernel_size,
+                        residual=model_config.eca.residual,
+                    )
+                )
+            else:
+                self.mrf_ecas.append(nn.Identity())
+
             current_channels = next_channels
 
-        self.activation_post = get_activation(model_config.activation, current_channels)
+        self.activation_post = get_activation(model_config.activation, current_channels, model_config.snake_beta, model_config.alias_free)
 
         self.conv_post = weight_norm(
             nn.Conv1d(
@@ -339,7 +383,7 @@ class CQTUHiFiGANGenerator(nn.Module):
         num_resblocks_per_stage = len(self.config.resblock_kernel_sizes)
         resblock_index = 0
 
-        for up in self.ups:
+        for up, eca in zip(self.ups, self.mrf_ecas):
             x = F.leaky_relu(x, negative_slope=0.1)
             x = up(x)
 
@@ -351,6 +395,8 @@ class CQTUHiFiGANGenerator(nn.Module):
                 resblock_index += 1
 
             x = fused / num_resblocks_per_stage
+
+            x = eca(x)
 
         x = self.activation_post(x)
         x = self.conv_post(x)
