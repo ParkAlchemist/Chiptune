@@ -145,6 +145,7 @@ class AliasFreeConfig:
     downsample_kernel_size: int = 12
 
 
+@dataclass
 class ECAConfig:
     enabled: bool = False
 
