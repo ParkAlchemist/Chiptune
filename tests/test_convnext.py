@@ -1,10 +1,15 @@
 import pytest
 import torch
 
+
+from src.config.vocoder_config import VocoderGeneratorModelConfig
+
 from src.models.blocks.convnext_context import (
     ConvNeXtContextBlock1d,
     ConvNeXtContextTrunk1d
 )
+
+from src.models.vocoder_hifigan import CQTUHiFiGANGenerator
 
 @pytest.mark.parametrize(
     ("kernel_size", "dilation"),
@@ -187,4 +192,40 @@ def test_zero_layer_scale_makes_block_identity() -> None:
 
     assert torch.equal(y, x)
 
+
+def test_vocoder_has_context_trunk() -> None:
+
+    config = VocoderGeneratorModelConfig()
+
+    config.context.enabled = True
+
+    model = CQTUHiFiGANGenerator(
+        cqt_bins=116,
+        model_config=config
+    )
+
+    x = torch.randn(2, 116, 640, requires_grad=True)
+    y = model(x)
+    y.square().mean().backward()
+
+    assert isinstance(model.context_trunk, ConvNeXtContextTrunk1d)
+
+
+
+def test_vocoder_does_not_have_context_trunk() -> None:
+
+    config = VocoderGeneratorModelConfig()
+
+    config.context.enabled = False
+
+    model = CQTUHiFiGANGenerator(
+        cqt_bins=116,
+        model_config=config
+    )
+
+    x = torch.randn(2, 116, 640, requires_grad=True)
+    y = model(x)
+    y.square().mean().backward()
+
+    assert not isinstance(model.context_trunk, ConvNeXtContextTrunk1d)
 

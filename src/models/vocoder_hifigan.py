@@ -22,6 +22,10 @@ from src.models.blocks.channel_attention import (
     ECABlock1d,
 )
 
+from src.models.blocks.convnext_context import (
+    ConvNeXtContextTrunk1d,
+)
+
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
     return (kernel_size * dilation - dilation) // 2
@@ -287,6 +291,20 @@ class CQTUHiFiGANGenerator(nn.Module):
             )
         )
 
+        context_config = model_config.context
+
+        if context_config.enabled:
+            self.context_trunk = ConvNeXtContextTrunk1d(
+                channels=model_config.upsample_initial_channel,
+                number_of_blocks=context_config.number_of_blocks,
+                kernel_sizes=context_config.kernel_sizes,
+                dilations=context_config.dilations,
+                expansion_ratio=context_config.expansion_ratio,
+                layer_scale_initial=context_config.layer_scale_initial,
+            )
+        else:
+            self.context_trunk = nn.Identity()
+
         self.ups = nn.ModuleList()
         self.mrf_ecas = nn.ModuleList()
         self.resblocks = nn.ModuleList()
@@ -379,6 +397,8 @@ class CQTUHiFiGANGenerator(nn.Module):
             )
 
         x = self.conv_pre(cqt)
+
+        x = self.context_trunk(x)
 
         num_resblocks_per_stage = len(self.config.resblock_kernel_sizes)
         resblock_index = 0

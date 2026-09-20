@@ -60,6 +60,14 @@ beta = 1.0
 minimum_kernel_size = 3
 residual = false
 
+[generator.context]
+enabled = false
+number_of_blocks = 4
+kernel_sizes = [7, 7, 7 ,7]
+dilations = [1, 1, 1, 1]
+expansion_ratio = 2
+layer_scale_initial = 0.000001
+
 [discriminator]
 use_mpd = true
 use_msd = true

@@ -378,6 +378,14 @@ def _validate_generator_config(
                 "odd integer."
             )
 
+    context = generator.context
+    if context.enabled:
+        if context.number_of_blocks <= 0:
+            errors.append(
+                "context.number_of_blocks must be greater than 0."
+            )
+
+
 
 def _validate_discriminator_config(
     config: VocoderExperimentConfig,

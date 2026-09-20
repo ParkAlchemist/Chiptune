@@ -159,6 +159,16 @@ class ECAConfig:
     residual: bool = False
 
 
+class ContextTrunkConfig:
+    enabled: bool = False
+    channels: int = 256
+    number_of_blocks: int = 4
+    kernel_sizes: int | tuple[int, ...] = (7, 7, 7, 7)
+    dilations: int | tuple[int, ...] = (1, 1, 1, 1)
+    expansion_ratio: int = 2
+    layer_scale_initial: float = 1e-6
+
+
 @dataclass
 class VocoderGeneratorModelConfig:
     activation: ActivationType = "snake_beta"
@@ -181,6 +191,7 @@ class VocoderGeneratorModelConfig:
     alias_free: AliasFreeConfig = field(default_factory=AliasFreeConfig)
 
     eca: ECAConfig = field(default_factory=ECAConfig)
+    context: ContextTrunkConfig = field(default_factory=ContextTrunkConfig)
 
 
 @dataclass
