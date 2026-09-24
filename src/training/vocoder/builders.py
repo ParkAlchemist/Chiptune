@@ -73,6 +73,8 @@ def build_training_components(
         config.generator,
     ).to(device)
 
+    generator.to(device)
+
     discriminator = HiFiGANMultiDiscriminator(
         config.discriminator,
     ).to(device)

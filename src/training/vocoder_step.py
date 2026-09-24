@@ -128,6 +128,7 @@ def vocoder_train_micro_step(
         "loss_g_adversarial": float(generator_losses.adversarial.detach().cpu()),
         "loss_g_feature_matching": float(generator_losses.feature_matching.detach().cpu()),
         "loss_g_mrstft": float(generator_losses.mrstft.detach().cpu()),
+        "loss_g_waveform": float(generator_losses.waveform.detach().cpu()),
         "loss_d_real": float(discriminator_losses.real.detach().cpu()),
         "loss_d_fake": float(discriminator_losses.fake.detach().cpu()),
     }
@@ -350,6 +351,7 @@ def vocoder_train_step(
         "loss_g_adv": g_losses.adversarial,
         "loss_g_fm": g_losses.feature_matching,
         "loss_g_mrstft": g_losses.mrstft,
+        "loss_g_waveform": g_losses.waveform,
 
         "loss_d_total": d_losses.total,
         "loss_d_real": d_losses.real,

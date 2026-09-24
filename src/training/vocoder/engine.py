@@ -21,6 +21,9 @@ from src.training.vocoder_step import (
     finish_vocoder_optimizer_step,
     vocoder_train_micro_step,
 )
+from src.training.vocoder.schedulers import (
+    step_vocoder_schedulers, get_vocoder_learning_rates,
+)
 from src.training.vocoder.checkpointing import (
     prune_numbered_checkpoints,
     save_checkpoint,
@@ -128,6 +131,13 @@ def perform_optimizer_update(
             ),
         )
 
+        step_vocoder_schedulers(
+            components=components,
+            generator_config=config.scheduler_generator,
+            discriminator_config=config.scheduler_discriminator,
+            interval="optimizer_step"
+        )
+
     except Exception:
         optimizers.generator.zero_grad(set_to_none=True)
         optimizers.discriminator.zero_grad(set_to_none=True)
@@ -156,6 +166,8 @@ def perform_optimizer_update(
         accumulation_size
     )
     losses["use_amp"] = float(use_amp)
+
+    losses.update(get_vocoder_learning_rates(components))
 
     return OptimizerUpdateResult(
         losses=losses,
@@ -360,10 +372,12 @@ def run_epoch(
             step,
             config.logging.status_every_steps,
         ):
+            learning_rates = get_vocoder_learning_rates(runtime.components)
+
             write_status(
                 paths=runtime.paths,
                 state=state,
-                losses=losses,
+                losses={**losses, **learning_rates},
             )
 
         if (
@@ -396,6 +410,12 @@ def save_latest(
     state.latest_checkpoint = str(latest_path)
 
     return latest_path
+
+
+def _count_model_parameters(
+    model: torch.nn.Module,
+) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def run_training(
@@ -443,6 +463,13 @@ def run_training(
                 epoch=epoch,
                 runtime=runtime,
                 state=state,
+            )
+
+            step_vocoder_schedulers(
+                components=runtime.components,
+                generator_config=config.scheduler_generator,
+                discriminator_config=config.scheduler_discriminator,
+                interval="epoch"
             )
 
             state.epoch = epoch + 1

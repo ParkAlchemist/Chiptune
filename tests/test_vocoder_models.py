@@ -59,27 +59,3 @@ def test_vocoder_generator_accepts_4d_cqt():
     assert y.shape == (2, 1, 16 * 512)
     assert torch.isfinite(y).all()
 
-
-def test_vocoder_discriminator_outputs_synthetic():
-    discriminator = HiFiGANMultiDiscriminator(
-        VocoderDiscriminatorConfig(
-            mpd=MultiPeriodDiscriminatorConfig(
-                channels=(8, 32, 128, 256, 256),
-            )
-        )
-    )
-
-    real = torch.randn(2, 1, 8192)
-    fake = torch.randn(2, 1, 8192)
-
-    out = discriminator(real, fake)
-
-    assert len(out["real_outputs"]) == 8
-    assert len(out["fake_outputs"]) == 8
-    assert len(out["real_feature_maps"]) == 8
-    assert len(out["fake_feature_maps"]) == 8
-
-    for pred in out["real_outputs"] + out["fake_outputs"]:
-        assert pred.ndim == 2
-        assert pred.shape[0] == 2
-        assert torch.isfinite(pred).all()

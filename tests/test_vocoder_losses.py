@@ -48,6 +48,7 @@ def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
             lambda_adv=1.0,
             lambda_feature_matching=2.0,
             lambda_mrstft=1.0,
+            lambda_waveform=1.0,
             mrstft=MultiResolutionSTFTConfig(
                 fft_sizes=(256,),
                 hop_sizes=(64,),
@@ -86,6 +87,7 @@ def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
     assert torch.isfinite(losses.adversarial)
     assert torch.isfinite(losses.feature_matching)
     assert torch.isfinite(losses.mrstft)
+    assert torch.isfinite(losses.waveform)
 
     losses.total.backward()
 

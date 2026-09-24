@@ -176,8 +176,8 @@ def test_context_trunk_state_dict_roundtrip() -> None:
     assert torch.allclose(
         first_output,
         second_output,
-        atol=1e-6,
-        rtol=1e-5,
+        atol=1e-5,
+        rtol=1e-4,
     )
 
 

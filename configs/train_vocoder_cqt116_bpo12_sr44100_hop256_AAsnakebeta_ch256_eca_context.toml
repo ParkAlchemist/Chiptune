@@ -1,0 +1,171 @@
+schema_version = 1
+
+[run]
+experiment_name = "cqt116_sr44100_hop256_bpo12_AAsnakebeta_ch256_eca_context"
+output_root = "runs/vocoder_cqt"
+seed = 1337
+device = "cuda"
+
+[data]
+chip_cache_root = "C:/Datasets/cache/cqt/cqt116_sr44100_hop256_bpo12_fminA0/chip"
+sample_rate = 44100
+hop_length = 256
+cqt_bins = 116
+bins_per_octave = 12
+fmin = 27.5
+
+segment_frames = 128
+windows_per_track = 8
+batch_size = 4
+num_workers = 4
+cache_waveforms = 16
+pin_memory = true
+persistent_workers = true
+prefetch_factor = 2
+random_window = true
+drop_last = true
+
+[generator]
+activation = "snake_beta"
+upsample_initial_channel = 256
+upsample_rates = [8, 8, 2, 2]
+upsample_kernel_sizes = [16, 16, 4, 4]
+resblock_kernel_sizes = [3, 7, 11]
+resblock_dilation_sizes = [
+    [1, 3, 5],
+    [1, 3, 5],
+    [1, 3, 5],
+]
+final_tanh = true
+use_weight_norm = true
+
+[generator.snake_beta]
+alpha_logscale = true
+alpha_initial = 1.0
+beta_initial = 1.0
+
+[generator.alias_free]
+enabled = true
+implementation = "pytorch"
+upsample_ratio = 2
+downsample_ratio = 2
+upsample_kernel_size = 12
+downsample_kernel_size = 12
+
+[generator.eca]
+enabled = true
+kernel_size = 0
+gamma = 2.0
+beta = 1.0
+minimum_kernel_size = 3
+residual = false
+
+[generator.context]
+enabled = true
+number_of_blocks = 4
+kernel_sizes = [7, 7, 7 ,7]
+dilations = [1, 1, 1, 1]
+expansion_ratio = 4
+layer_scale_initial = 1e-6
+
+[discriminator]
+use_mpd = true
+use_msd = true
+
+[discriminator.mpd]
+periods = [2, 3, 5, 7, 11]
+channels = [16, 64, 256, 512, 512]
+kernel_size = 5
+stride = 3
+
+[discriminator.msd]
+num_scales = 3
+pool_kernel_size = 4
+pool_stride = 2
+pool_padding = 2
+
+[loss]
+lambda_adversarial = 1.0
+lambda_feature_matching = 2.0
+lambda_mrstft = 2.5
+lambda_waveform = 0.5
+
+[loss.mrstft]
+fft_sizes = [256, 512, 1024, 2048]
+hop_sizes = [64, 128, 256, 512]
+win_lengths = [256, 512, 1024, 2048]
+spectral_convergence_weight = 1.0
+log_magnitude_weight = 1.0
+eps = 1e-7
+
+[optimizer.generator]
+name = "adamw"
+lr = 0.0002
+beta1 = 0.8
+beta2 = 0.99
+weight_decay = 0.0
+eps = 1e-8
+
+[optimizer.discriminator]
+name = "adamw"
+lr = 0.0001
+beta1 = 0.8
+beta2 = 0.99
+weight_decay = 0.0
+eps = 1e-8
+
+[scheduler.generator]
+name = "exponential"
+enabled = true
+gamma = 0.999
+interval = "epoch"
+
+[scheduler.discriminator]
+name = "exponential"
+enabled = true
+gamma = 0.999
+interval = "epoch"
+
+[training]
+epochs = 500
+gradient_accumulation_steps = 2
+grad_clip_generator = 10.0
+grad_clip_discriminator = 10.0
+
+generator_start_step = 0
+discriminator_start_step = 0
+adversarial_start_step = 0
+
+overfit_batches = 0
+detect_anomaly = false
+fail_on_nonfinite = true
+
+[amp]
+enabled = false
+start_step = 0
+dtype = "float16"
+initial_scale = 256.0
+growth_interval = 2000
+
+[augmentation]
+enabled = false
+gain_db_min = 0.0
+gain_db_max = 0.0
+conditioning_noise_std = 0.0
+time_mask_probability = 0.0
+frequency_mask_probability = 0.0
+
+[logging]
+log_every_steps = 50
+status_every_steps = 50
+save_every_steps = 10000
+preview_every_steps = 10000
+preview_num_samples = 4
+keep_numbered_checkpoints = 10
+tensorboard = true
+
+[control]
+enabled = true
+poll_every_steps = 10
+save_on_interrupt = true
+

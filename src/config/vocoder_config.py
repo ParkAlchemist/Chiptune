@@ -6,6 +6,8 @@ from typing import Literal
 
 NormType = Literal["weight",  "spectral", "none"]
 ActivationType = Literal["leaky_relu", "snake_beta"]
+SchedulerName = Literal["none", "exponential"]
+SchedulerInterval = Literal["epoch", "optimizer_step"]
 
 
 @dataclass
@@ -28,9 +30,10 @@ class OptimizerConfig:
 
 @dataclass
 class SchedulerConfig:
-    name: str = "exponential"
+    name: SchedulerName = "exponential"
     enabled: bool = False
     gamma: float = 0.999
+    interval: SchedulerInterval = "epoch"
 
 
 @dataclass
@@ -102,6 +105,7 @@ class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
     lambda_mrstft: float = 45.0
+    lambda_waveform: float = 1.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
 
@@ -159,9 +163,9 @@ class ECAConfig:
     residual: bool = False
 
 
+@dataclass
 class ContextTrunkConfig:
     enabled: bool = False
-    channels: int = 256
     number_of_blocks: int = 4
     kernel_sizes: int | tuple[int, ...] = (7, 7, 7, 7)
     dilations: int | tuple[int, ...] = (1, 1, 1, 1)
@@ -225,7 +229,6 @@ class ScaleDiscriminatorConfig:
 
 
 @dataclass
-@dataclass
 class MultiScaleDiscriminatorConfig:
     discriminator: ScaleDiscriminatorConfig = field(
         default_factory=ScaleDiscriminatorConfig
@@ -242,11 +245,54 @@ class MultiScaleDiscriminatorConfig:
 
 
 @dataclass
+class ResolutionDiscriminatorConfig:
+    channels: tuple[int, ...] = (
+        32,
+        64,
+        128,
+        256,
+        512,
+    )
+    kernel_sizes: tuple[tuple[int, int], ...] = (
+        (3, 9),
+        (3, 9),
+        (3, 9),
+        (3, 3),
+        (3, 3),
+    )
+    strides: tuple[tuple[int, int], ...] = (
+        (1, 2),
+        (2, 2),
+        (2, 2),
+        (2, 1),
+        (1, 1),
+    )
+    norm: NormType = "weight"
+    negative_slope: float = 0.2
+    eps: float = 1e-8
+    magnitude_compression: str = "log1p"
+
+
+@dataclass
+class MultiResolutionDiscriminatorConfig:
+    resolutions: tuple[tuple[int, int, int], ...] = (
+        (256, 64, 256),
+        (1024, 256, 1024),
+        (2048, 512, 2048),
+    )
+
+    discriminator: ResolutionDiscriminatorConfig = field(default_factory=ResolutionDiscriminatorConfig)
+
+
+@dataclass
 class VocoderDiscriminatorConfig:
     mpd: MultiPeriodDiscriminatorConfig = field(default_factory=MultiPeriodDiscriminatorConfig)
     msd: MultiScaleDiscriminatorConfig = field(default_factory=MultiScaleDiscriminatorConfig)
+    mrd: MultiResolutionDiscriminatorConfig = field(default_factory=MultiResolutionDiscriminatorConfig)
+
     use_mpd: bool = True
     use_msd: bool = True
+    use_mrd: bool = True
 
 
 @dataclass

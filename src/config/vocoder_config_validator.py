@@ -660,6 +660,7 @@ def _validate_loss_config(
             loss.lambda_feature_matching
         ),
         "loss.lambda_mrstft": loss.lambda_mrstft,
+        "loss.lambda_waveform": loss.lambda_waveform,
     }
 
     for path, value in weights.items():
@@ -706,7 +707,7 @@ def _validate_optimizer_config(
 
     if optimizer.eps <= 0.0:
         errors.append(
-            f"{path}.*ps must be positive."
+            f"{path}.eps must be positive."
         )
 
 
@@ -719,17 +720,30 @@ def _validate_scheduler_config(
     if not scheduler.enabled:
         return
 
-    if scheduler.name == "none":
+    if scheduler.name not in {"none", "exponential"}:
         errors.append(
-            f"{path}.enabled is true, but its name is 'none'."
+            f"{path}.name has unsupported value {scheduler.name!r}."
+        )
+
+    if scheduler.interval not in {"epoch", "optimizer_step"}:
+        errors.append(
+            f"{path}.interval has unsupported value {scheduler.interval!r}."
+        )
+
+    if scheduler.enabled and scheduler.name == "none":
+        errors.append(
+            f"{path}.enabled is true, but name is 'none'."
+        )
+
+    if not scheduler.enabled and scheduler.name != "none":
+        errors.append(
+            f"{path}.name is {scheduler.name!r}, but enabled is false."
         )
 
     if scheduler.name == "exponential":
-        if not 0.0 < scheduler.gamma <= 1.0:
+        if not 0.0 < scheduler.gamma < 1.0:
             errors.append(
-                f"{path}.gamma must be in (0, 1] for an "
-                "exponential scheduler. "
-                f"Got {scheduler.gamma}."
+                f"{path}.gamma must be in (0, 1] for ExponentialLR, got {scheduler.gamma}."
             )
 
 

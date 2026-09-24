@@ -77,6 +77,31 @@ def save_checkpoint(
     temporary_path.replace(path)
 
 
+def load_scheduler_state(
+    *,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    checkpoint_state: dict | None,
+    name: str,
+) -> None:
+    if scheduler is None:
+        if checkpoint_state is not None:
+            raise ValueError(
+                f"Checkpoint contains {name} scheduler state, "
+                "but the current configuration disables that "
+                "scheduler."
+            )
+
+        return
+
+    if checkpoint_state is None:
+        raise ValueError(
+            f"Current configuration enables the {name} scheduler, "
+            "but the checkpoint contains no scheduler state."
+        )
+
+    scheduler.load_state_dict(checkpoint_state)
+
+
 def load_checkpoint(
     path: Path,
     *,
@@ -104,26 +129,22 @@ def load_checkpoint(
         checkpoint["optimizer_d"]
     )
 
+    load_scheduler_state(
+        scheduler=components.scheduler_generator,
+        checkpoint_state=checkpoint["scheduler_g"],
+        name="generator",
+    )
+
+    load_scheduler_state(
+        scheduler=components.scheduler_discriminator,
+        checkpoint_state=checkpoint["scheduler_d"],
+        name="discriminator",
+    )
+
     scaler_state = checkpoint.get("scaler")
 
     if scaler_state is not None:
         components.scaler.load_state_dict(scaler_state)
-
-    if (
-        components.scheduler_generator is not None
-        and checkpoint.get("scheduler_g") is not None
-    ):
-        components.scheduler_generator.load_state_dict(
-            checkpoint["scheduler_g"]
-        )
-
-    if (
-        components.scheduler_discriminator is not None
-        and checkpoint.get("scheduler_d") is not None
-    ):
-        components.scheduler_discriminator.load_state_dict(
-            checkpoint["scheduler_d"]
-        )
 
     return TrainingState(
         epoch=int(checkpoint.get("epoch", 0)),

@@ -167,7 +167,7 @@ class ConvNeXtContextTrunk1d(nn.Module):
             name="dilations"
         )
 
-        self.blocks = [
+        self.blocks = nn.ModuleList([
             ConvNeXtContextBlock1d(
                 channels=channels,
                 kernel_size=kernel_size,
@@ -175,7 +175,7 @@ class ConvNeXtContextTrunk1d(nn.Module):
                 expansion_ratio=expansion_ratio,
                 layer_scale_initial=layer_scale_initial,
             ) for kernel_size, dilation in zip(self.kernel_sizes, self.dilations)
-        ]
+        ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.blocks:

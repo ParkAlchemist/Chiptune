@@ -258,11 +258,6 @@ class CQTUHiFiGANGenerator(nn.Module):
 
     Output:
         [B, 1, T * Hop]
-
-    This is designed for the current CQT cache:
-        sample_rate = 22050
-        hop_length = 512
-        n_bins = 96
     """
 
     def __init__(

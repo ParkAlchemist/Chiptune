@@ -25,6 +25,7 @@ class VocoderLossConfig:
     lambda_adv: float = 1.0
     lambda_feature_matching: float = 2.0
     lambda_mrstft: float = 45.0
+    lambda_waveform: float = 1.0
 
     mrstft: MultiResolutionSTFTConfig = field(default_factory=MultiResolutionSTFTConfig)
 
@@ -35,6 +36,7 @@ class VocoderGeneratorLossOutput:
     adversarial: torch.Tensor
     feature_matching: torch.Tensor
     mrstft: torch.Tensor
+    waveform: torch.Tensor
 
 
 @dataclass
@@ -219,35 +221,29 @@ class VocoderLossBundle(nn.Module):
 
 
 def lsgan_discriminator_loss(
-    real_outputs: Sequence[torch.Tensor],
-    fake_outputs: Sequence[torch.Tensor],
+    real_outputs: list[torch.Tensor],
+    fake_outputs: list[torch.Tensor],
 ) -> VocoderDiscriminatorLossOutput:
-    """
-    LSGAN discriminator loss.
+    if not real_outputs:
+        raise ValueError("No discriminator outputs supplied.")
 
-    Real targets are 1.
-    Fake targets are 0.
-    """
-    if len(real_outputs) != len(fake_outputs):
-        raise ValueError("real_outputs and fake_outputs must have same length.")
+    real_losses = [
+        torch.mean((1.0 - output) ** 2)
+        for output in real_outputs
+    ]
 
-    loss_real = 0.0
-    loss_fake = 0.0
+    fake_losses = [
+        torch.mean(output ** 2)
+        for output in fake_outputs
+    ]
 
-    for real_pred, fake_pred in zip(real_outputs, fake_outputs):
-        loss_real = loss_real + F.mse_loss(real_pred, torch.ones_like(real_pred))
-        loss_fake = loss_fake + F.mse_loss(fake_pred, torch.zeros_like(fake_pred))
-
-    n = max(1, len(real_outputs))
-
-    loss_real = loss_real / n
-    loss_fake = loss_fake / n
-    total = loss_real + loss_fake
+    loss_real = torch.stack(real_losses).mean()
+    loss_fake = torch.stack(fake_losses).mean()
 
     return VocoderDiscriminatorLossOutput(
-        total=total,
-        real=loss_real,
-        fake=loss_fake,
+        loss_real + loss_fake,
+        loss_real,
+        loss_fake,
     )
 
 
@@ -259,44 +255,63 @@ def lsgan_generator_adversarial_loss(
 
     Generator wants fake predictions to be classified as real, target 1.
     """
-    loss = 0.0
+    losses = [
+        torch.mean((1.0 - output) ** 2)
+        for output in fake_outputs
+    ]
 
-    for fake_pred in fake_outputs:
-        loss = loss + F.mse_loss(fake_pred, torch.ones_like(fake_pred))
-
-    loss = loss / max(1, len(fake_outputs))
+    loss = torch.stack(losses).mean()
 
     return loss
 
 
-def feature_matching_loss(
-    real_feature_maps: Sequence[Sequence[torch.Tensor]],
-    fake_feature_maps: Sequence[Sequence[torch.Tensor]],
+def waveform_loss(
+        fake_audio: torch.Tensor,
+        real_audio: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Feature matching loss between discriminator intermediate activations.
 
-    Real feature maps are detached so this loss updates only the generator
-    during generator optimization.
-    """
+    return F.l1_loss(input=fake_audio, target=real_audio)
+
+
+def feature_matching_loss(
+    real_feature_maps: list[list[torch.Tensor]],
+    fake_feature_maps: list[list[torch.Tensor]],
+) -> torch.Tensor:
     if len(real_feature_maps) != len(fake_feature_maps):
-        raise ValueError("real_feature_maps and fake_feature_maps must have same length.")
+        raise ValueError(
+            "Real and fake feature-map collections must match."
+        )
 
-    total = 0.0
-    count = 0
+    discriminator_losses: list[torch.Tensor] = []
 
-    for real_maps, fake_maps in zip(real_feature_maps, fake_feature_maps):
-        if len(real_maps) != len(fake_maps):
-            raise ValueError("Feature map lists must have matching lengths.")
+    for real_layers, fake_layers in zip(
+        real_feature_maps,
+        fake_feature_maps,
+    ):
+        if len(real_layers) != len(fake_layers):
+            raise ValueError(
+                "Real and fake discriminator layer counts "
+                "must match."
+            )
 
-        for real_fmap, fake_fmap in zip(real_maps, fake_maps):
-            total = total + F.l1_loss(fake_fmap, real_fmap.detach())
-            count += 1
+        layer_losses = [
+            F.l1_loss(
+                fake_layer,
+                real_layer.detach(),
+            )
+            for real_layer, fake_layer in zip(
+                real_layers,
+                fake_layers,
+            )
+        ]
 
-    if count == 0:
-        raise ValueError("No feature maps provided for feature matching loss.")
+        discriminator_losses.append(
+            torch.stack(layer_losses).mean()
+        )
 
-    return total / count
+    return torch.stack(
+        discriminator_losses
+    ).mean()
 
 
 def compute_vocoder_generator_loss(
@@ -312,6 +327,7 @@ def compute_vocoder_generator_loss(
             lambda_adv * adversarial
           + lambda_feature_matching * feature_matching
           + lambda_mrstft * multi_resolution_stft
+          + lambda_waveform * waveform
     """
     cfg = loss_bundle.config
 
@@ -329,10 +345,16 @@ def compute_vocoder_generator_loss(
         real_audio=real_audio,
     )
 
+    loss_waveform = waveform_loss(
+        fake_audio=fake_audio,
+        real_audio=real_audio,
+    )
+
     total = (
         cfg.lambda_adv * loss_adv
         + cfg.lambda_feature_matching * loss_fm
         + cfg.lambda_mrstft * loss_mrstft
+        + cfg.lambda_waveform * loss_waveform
     )
 
     return VocoderGeneratorLossOutput(
@@ -340,6 +362,7 @@ def compute_vocoder_generator_loss(
         adversarial=loss_adv,
         feature_matching=loss_fm,
         mrstft=loss_mrstft,
+        waveform=loss_waveform,
     )
 
 
