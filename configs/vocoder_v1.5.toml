@@ -1,7 +1,7 @@
 schema_version = 1
 
 [run]
-experiment_name = "cqt116_sr44100_hop256_bpo12_AAsnakebeta_ch256_eca_context"
+experiment_name = "v1.5"
 output_root = "runs/vocoder_cqt"
 seed = 1337
 device = "cuda"
@@ -28,9 +28,9 @@ drop_last = true
 [generator]
 activation = "snake_beta"
 upsample_initial_channel = 256
-upsample_rates = [8, 8, 2, 2]
-upsample_kernel_sizes = [16, 16, 4, 4]
-resblock_kernel_sizes = [3, 7, 11]
+upsample_rates = [8, 4, 4, 2]
+upsample_kernel_sizes = [16, 8, 8, 4]
+resblock_kernel_sizes = [3, 7, 15]
 resblock_dilation_sizes = [
     [1, 3, 5],
     [1, 3, 5],
@@ -70,11 +70,11 @@ layer_scale_initial = 1e-6
 
 [discriminator]
 use_mpd = true
-use_msd = true
-use_mrd = false
+use_msd = false
+use_mrd = true
 
 [discriminator.mpd]
-periods = [2, 3, 5, 7, 11]
+periods = [2, 3, 5, 7, 11, 17, 23]
 channels = [16, 64, 256, 512, 512]
 kernel_size = 5
 stride = 3
@@ -98,6 +98,7 @@ negative_slope = 0.2
 [discriminator.mrd]
 resolutions = [
     [256, 64, 256],
+    [512, 128, 512],
     [1024, 256, 1024],
     [2048, 512, 2048],
 ]

@@ -8,6 +8,7 @@ NormType = Literal["weight",  "spectral", "none"]
 ActivationType = Literal["leaky_relu", "snake_beta"]
 SchedulerName = Literal["none", "exponential"]
 SchedulerInterval = Literal["epoch", "optimizer_step"]
+ContextBlockType = Literal["convnext", "multi_kernel_convnext"]
 
 
 @dataclass
@@ -166,9 +167,16 @@ class ECAConfig:
 @dataclass
 class ContextTrunkConfig:
     enabled: bool = False
+
+    block_type: ContextBlockType = "convnext"
     number_of_blocks: int = 4
-    kernel_sizes: int | tuple[int, ...] = (7, 7, 7, 7)
-    dilations: int | tuple[int, ...] = (1, 1, 1, 1)
+
+    kernel_size: int = 7
+    dilation: int = 1
+
+    multi_kernel_sizes: tuple[int, ...] = (3, 7, 15, 31)
+    multi_kernel_dilations: tuple[int, ...] = (1, 1, 1, 1)
+
     expansion_ratio: int = 2
     layer_scale_initial: float = 1e-6
 

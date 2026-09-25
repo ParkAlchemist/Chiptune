@@ -292,10 +292,19 @@ class CQTUHiFiGANGenerator(nn.Module):
             self.context_trunk = ConvNeXtContextTrunk1d(
                 channels=model_config.upsample_initial_channel,
                 number_of_blocks=context_config.number_of_blocks,
-                kernel_sizes=context_config.kernel_sizes,
-                dilations=context_config.dilations,
-                expansion_ratio=context_config.expansion_ratio,
-                layer_scale_initial=context_config.layer_scale_initial,
+                block_type=context_config.block_type,
+                kernel_size=context_config.kernel_size,
+                dilation = context_config.dilation,
+                multi_kernel_sizes=(
+                    context_config.multi_kernel_sizes
+                ),
+                multi_kernel_dilations = (
+                    context_config.multi_kernel_dilations
+                ),
+                expansion_ratio = context_config.expansion_ratio,
+                layer_scale_initial = (
+                    context_config.layer_scale_initial
+                ),
             )
         else:
             self.context_trunk = nn.Identity()

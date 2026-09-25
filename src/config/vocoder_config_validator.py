@@ -378,13 +378,82 @@ def _validate_generator_config(
                 "odd integer."
             )
 
-    context = generator.context
-    if context.enabled:
-        if context.number_of_blocks <= 0:
+    validate_context_config(
+        context=config.generator.context,
+        generator_channels=config.generator.upsample_initial_channel,
+        errors=errors,
+    )
+
+
+def validate_context_config(
+    context,
+    *,
+    generator_channels: int,
+    errors: list[str],
+) -> None:
+    if context.number_of_blocks <= 0:
+        errors.append(
+            "generator.context.number_of_blocks must be positive."
+        )
+
+    if context.expansion_ratio <= 0:
+        errors.append(
+            "generator.context.expansion_ratio must be positive."
+        )
+
+    if context.layer_scale_initial < 0.0:
+        errors.append(
+            "generator.context.layer_scale_initial must be "
+            "non-negative."
+        )
+
+    if context.block_type not in {
+        "convnext",
+        "multi_kernel_convnext",
+    }:
+        errors.append(
+            "generator.context.block_type has unsupported value "
+            f"{context.block_type!r}."
+        )
+
+    if context.block_type == "multi_kernel_convnext":
+        if not context.multi_kernel_sizes:
             errors.append(
-                "context.number_of_blocks must be greater than 0."
+                "generator.context.multi_kernel_sizes must not "
+                "be empty."
             )
 
+        if len(context.multi_kernel_sizes) != len(
+            context.multi_kernel_dilations
+        ):
+            errors.append(
+                "generator.context.multi_kernel_sizes and "
+                "multi_kernel_dilations must have equal lengths."
+            )
+
+        if len(context.multi_kernel_sizes) > generator_channels:
+            errors.append(
+                "The number of multi-kernel branches must not "
+                "exceed the context channel count."
+            )
+
+        for index, kernel_size in enumerate(
+            context.multi_kernel_sizes
+        ):
+            if kernel_size <= 0 or kernel_size % 2 == 0:
+                errors.append(
+                    "generator.context.multi_kernel_sizes"
+                    f"[{index}] must be a positive odd integer."
+                )
+
+        for index, dilation in enumerate(
+            context.multi_kernel_dilations
+        ):
+            if dilation <= 0:
+                errors.append(
+                    "generator.context.multi_kernel_dilations"
+                    f"[{index}] must be positive."
+                )
 
 
 def _validate_discriminator_config(
@@ -564,6 +633,32 @@ def _validate_discriminator_config(
                 "discriminator.msd.discriminator.negative_slope "
                 "must be non-negative."
             )
+
+
+    mrd = discriminator.mrd
+    if discriminator.use_mrd:
+        if not mrd.resolutions:
+            errors.append(f"ResolutionDiscriminator expects at least one resolution")
+
+        for resolution in mrd.resolutions:
+            if len(resolution) != 3:
+                errors.append(f"ResolutionDiscriminator expects (fft_size, hop_size, win_length), got {resolution}")
+                continue
+
+            fft_size, hop_size, win_length = resolution
+
+            if fft_size < 0:
+                errors.append(f"Expected fft_size > 0, got {fft_size}")
+
+            if hop_size < 0:
+                errors.append(f"Expected hop_size > 0, got {hop_size}")
+
+            if win_length < 0:
+                errors.append(f"Expected win_length > 0, got {win_length}")
+
+            if win_length > fft_size:
+                errors.append(f"Expected win_length > fft_size, got win_length={win_length} and fft_size={fft_size}")
+
 
 
 def _validate_mrstft_config(
