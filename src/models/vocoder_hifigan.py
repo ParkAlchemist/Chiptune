@@ -305,6 +305,9 @@ class CQTUHiFiGANGenerator(nn.Module):
                 layer_scale_initial = (
                     context_config.layer_scale_initial
                 ),
+                attn_config=context_config.attention,
+                use_grn=context_config.use_grn,
+                grn_eps=context_config.grn_eps,
             )
         else:
             self.context_trunk = nn.Identity()

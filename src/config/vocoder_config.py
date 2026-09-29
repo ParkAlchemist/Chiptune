@@ -165,6 +165,23 @@ class ECAConfig:
 
 
 @dataclass
+class ContextAttentionConfig:
+    enabled: bool = False
+
+    placement: int = 2
+
+    number_of_heads: int = 8
+    dropout: float = 0.0
+
+    rope_base: float = 10_000.0
+
+    layer_scale_initial: float = 1e-4
+
+    qkv_bias:bool = True
+    output_bias: bool = True
+
+
+@dataclass
 class ContextTrunkConfig:
     enabled: bool = False
 
@@ -179,6 +196,11 @@ class ContextTrunkConfig:
 
     expansion_ratio: int = 2
     layer_scale_initial: float = 1e-6
+
+    attention: ContextAttentionConfig = field(default_factory=ContextAttentionConfig)
+
+    use_grn: bool = False
+    grn_eps: float = 1e-6
 
 
 @dataclass

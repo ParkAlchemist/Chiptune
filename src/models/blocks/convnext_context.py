@@ -5,6 +5,79 @@ import torch.nn as nn
 
 from collections.abc import Sequence
 
+from src.config.vocoder_config import ContextAttentionConfig
+from src.models.blocks.temporal_attention import RoPETemporalSelfAttention1d
+
+
+class GlobalResponseNorm1d(nn.Module):
+    """
+    Global Response Normalization Layer for channel last temporal tensors.
+
+    Expected Input:
+        [B, C, T]
+
+    GRN computes a global L2 response over time for each channel,
+    normalizes responses relative to their channel-wise mean, and
+    applies a learned residual modulation:
+
+        y = x + gamma * (x * normalized_response) + beta
+
+    gamma and beta are initialized to zero, so GRN begins as an
+    exact identity mapping.
+    """
+    def __init__(
+            self,
+            channels: int,
+            *,
+            eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+
+        if channels <= 0:
+            raise ValueError(f"channels must be positive, got {channels}")
+
+        if eps <= 0.0:
+            raise ValueError(f"eps must be positive, got {eps}")
+
+        self.channels = channels
+        self.eps = eps
+
+        self.gamma = nn.Parameter(torch.zeros(1, 1, channels, dtype=torch.float32))
+        self.beta = nn.Parameter(torch.zeros(1, 1, channels, dtype=torch.float32))
+
+    def forward(
+            self,
+            x: torch.Tensor,
+    ) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError(f"Input tensor must have 3 dimensions, got {tuple(x.shape)}")
+
+        if x.shape[-1] != self.channels:
+            raise RuntimeError(f"Input tensor channel mismatch: "
+                               f"expected {self.channels}, got {x.shape[1]}")
+
+        # Global L2 response over the temporal dimension
+        #
+        # [B, T, C] -> [B, 1, C]
+        global_response = torch.linalg.vector_norm(
+            x,
+            ord=2,
+            dim=1,
+            keepdim=True,
+        )
+
+        # Normalize each channel response relative to the mean response across channels
+        #
+        # [B, 1, C] -> [B, 1, C]
+        mean_response = global_response.mean(
+            dim=-1,
+            keepdim=True,
+        )
+
+        normalized_response = global_response / mean_response.clamp_min(self.eps)
+
+        return x + self.gamma * (x * normalized_response) + self.beta
+
 
 class ConvNeXtContextBlock1d(nn.Module):
     def __init__(
@@ -14,6 +87,8 @@ class ConvNeXtContextBlock1d(nn.Module):
             dilation: int = 1,
             expansion_ratio: int = 2,
             layer_scale_initial: float = 1e-6,
+            use_grn: bool = False,
+            grn_eps: float = 1e-6,
     ) -> None:
         super().__init__()
 
@@ -66,6 +141,14 @@ class ConvNeXtContextBlock1d(nn.Module):
 
         self.activation = nn.GELU()
 
+        if use_grn:
+            self.grn = GlobalResponseNorm1d(
+                channels=expanded_channels,
+                eps=grn_eps,
+            )
+        else:
+            self.grn = nn.Identity()
+
         self.contract = nn.Linear(
             in_features=expanded_channels,
             out_features=channels
@@ -101,6 +184,8 @@ class ConvNeXtContextBlock1d(nn.Module):
         x = self.expand(x)
 
         x = self.activation(x)
+
+        x = self.grn(x)
 
         # [B, T, rC] -> [B, T, C]
         x = self.contract(x)
@@ -220,6 +305,8 @@ class MultiKernelConvNeXtContextBlock1d(nn.Module):
             dilations: int | Sequence[int] = 1,
             expansion_ratio: int = 2,
             layer_scale_initial: float = 1e-6,
+            use_grn: bool = False,
+            grn_eps: float = 1e-6,
     ) -> None:
         super().__init__()
 
@@ -296,6 +383,14 @@ class MultiKernelConvNeXtContextBlock1d(nn.Module):
 
         self.activation = nn.GELU()
 
+        if use_grn:
+            self.grn = GlobalResponseNorm1d(
+                channels=expanded_channels,
+                eps=grn_eps,
+            )
+        else:
+            self.grn = nn.Identity()
+
         self.contract = nn.Linear(expanded_channels, channels)
 
         self.layer_scale = nn.Parameter(
@@ -341,6 +436,7 @@ class MultiKernelConvNeXtContextBlock1d(nn.Module):
         x = self.norm(x)
         x = self.expand(x)
         x = self.activation(x)
+        x = self.grn(x)
         x = self.contract(x)
 
         x = x * self.layer_scale
@@ -372,6 +468,9 @@ class ConvNeXtContextTrunk1d(nn.Module):
         multi_kernel_dilations: Sequence[int] = (1, 1, 1, 1),
         expansion_ratio: int = 2,
         layer_scale_initial: float = 1e-6,
+        attn_config: ContextAttentionConfig = ContextAttentionConfig(),
+        use_grn: bool = False,
+        grn_eps: float = 1e-6,
     ) -> None:
         super().__init__()
 
@@ -386,13 +485,20 @@ class ConvNeXtContextTrunk1d(nn.Module):
                 f"got {number_of_blocks}"
             )
 
+        if attn_config.enabled:
+            if not 0 <= attn_config.placement <= number_of_blocks:
+                raise ValueError(
+                    f"attn_config.placement must be between 0 and number_of_blocks, got placement={attn_config.placement}"
+                    f" and number_of_blocks={number_of_blocks}"
+                )
+
         self.channels = channels
         self.number_of_blocks = number_of_blocks
         self.block_type = block_type
 
         self.blocks = nn.ModuleList()
 
-        for _ in range(number_of_blocks):
+        for block_idx in range(number_of_blocks):
             if block_type == "convnext":
 
                 block = ConvNeXtContextBlock1d(
@@ -401,6 +507,8 @@ class ConvNeXtContextTrunk1d(nn.Module):
                     dilation=dilation,
                     expansion_ratio=expansion_ratio,
                     layer_scale_initial=layer_scale_initial,
+                    use_grn=use_grn,
+                    grn_eps=grn_eps,
                 )
 
             elif block_type == "multi_kernel_convnext":
@@ -411,6 +519,8 @@ class ConvNeXtContextTrunk1d(nn.Module):
                     dilations=multi_kernel_dilations,
                     expansion_ratio=expansion_ratio,
                     layer_scale_initial=layer_scale_initial,
+                    use_grn=use_grn,
+                    grn_eps=grn_eps,
                 )
 
             else:
@@ -418,12 +528,36 @@ class ConvNeXtContextTrunk1d(nn.Module):
 
             self.blocks.append(block)
 
+        self.attention_enabled = attn_config.enabled
+        self.attention_placement = attn_config.placement
+
+        if attn_config.enabled:
+            self.attention = RoPETemporalSelfAttention1d(
+                channels=channels,
+                number_of_heads=attn_config.number_of_heads,
+                dropout=attn_config.dropout,
+                rope_base=attn_config.rope_base,
+                layer_scale_initial=attn_config.layer_scale_initial,
+                qkv_bias=attn_config.qkv_bias,
+                output_bias=attn_config.output_bias,
+            )
+        else:
+            self.attention = nn.Identity()
+
     def forward(
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-        for block in self.blocks:
+
+        for block_idx, block in enumerate(self.blocks, start=0):
+
+            if self.attention_enabled and self.attention_placement == block_idx:
+                x = self.attention(x)
+
             x = block(x)
+
+        if self.attention_placement == self.number_of_blocks:
+            x = self.attention(x)
 
         return x
 

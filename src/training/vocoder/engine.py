@@ -317,7 +317,6 @@ def run_epoch(
                 "G": f"{losses['loss_g_total']:.2f}",
                 "D": f"{losses['loss_d_total']:.3f}",
                 "MR": f"{losses['loss_g_mrstft']:.3f}",
-                "AMP": int(losses["use_amp"]),
             }
         )
 

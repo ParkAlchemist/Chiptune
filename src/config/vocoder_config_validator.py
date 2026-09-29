@@ -455,6 +455,52 @@ def validate_context_config(
                     f"[{index}] must be positive."
                 )
 
+    attention = context.attention
+    if attention.enabled:
+        if not 0 <= attention.placement <= context.number_of_blocks:
+            errors.append(
+                "generator.context.attention.placement must be between 0 and "
+                "context.number_of_blocks."
+            )
+
+        if attention.number_of_heads <= 0:
+            errors.append(
+                "generator.context.attention.number_of_heads must be "
+                "positive."
+            )
+        elif generator_channels & attention.number_of_heads != 0:
+            errors.append(
+                f"generator channels must be divisible by attention head count."
+                f"Got channels={generator_channels}, heads={attention.number_of_heads}"
+            )
+        else:
+            head_dim = generator_channels // attention.number_of_heads
+
+            if head_dim % 2 != 0:
+                errors.append(
+                    f"context attention heads must be even for RoPE, got head_dimension={head_dim}"
+                )
+
+        if not 0.0 <= attention.dropout < 1.0:
+            errors.append(
+                f"attention.dropout must be [0, 1)."
+            )
+
+        if attention.rope_base <= 0.0:
+            errors.append(
+                f"attention.rope_base must be positive."
+            )
+
+        if attention.layer_scale_initial < 0.0:
+            errors.append(
+                f"attention.layer_scale_initial must be positive."
+            )
+
+    if context.grn_eps <= 0.0:
+        errors.append(
+            f"context.grn_eps must be positive."
+        )
+
 
 def _validate_discriminator_config(
     config: VocoderExperimentConfig,
