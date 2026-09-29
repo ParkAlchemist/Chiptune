@@ -346,6 +346,8 @@ class CQTUHiFiGANGenerator(nn.Module):
                         kernel_size=kernel_size,
                         dilations=dilations,
                         activation=model_config.activation,
+                        snake_beta_config=model_config.snake_beta,
+                        alias_free_config=model_config.alias_free,
                     )
                 )
 

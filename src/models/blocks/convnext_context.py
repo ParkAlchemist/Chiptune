@@ -14,7 +14,7 @@ class GlobalResponseNorm1d(nn.Module):
     Global Response Normalization Layer for channel last temporal tensors.
 
     Expected Input:
-        [B, C, T]
+        [B, T, C]
 
     GRN computes a global L2 response over time for each channel,
     normalizes responses relative to their channel-wise mean, and
@@ -53,8 +53,8 @@ class GlobalResponseNorm1d(nn.Module):
             raise ValueError(f"Input tensor must have 3 dimensions, got {tuple(x.shape)}")
 
         if x.shape[-1] != self.channels:
-            raise RuntimeError(f"Input tensor channel mismatch: "
-                               f"expected {self.channels}, got {x.shape[1]}")
+            raise RuntimeError(f"GlobalResponseNorm1d channel mismatch:"
+                               f"expected {self.channels}, got {x.shape[-1]}")
 
         # Global L2 response over the temporal dimension
         #

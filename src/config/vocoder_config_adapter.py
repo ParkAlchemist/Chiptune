@@ -57,6 +57,7 @@ def build_loss_config(
         lambda_adv=source.lambda_adversarial,
         lambda_feature_matching=source.lambda_feature_matching,
         lambda_mrstft=source.lambda_mrstft,
+        lambda_waveform=source.lambda_waveform,
         mrstft=build_mrstft_config(experiment),
     )
 

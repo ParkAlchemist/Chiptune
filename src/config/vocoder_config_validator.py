@@ -468,7 +468,7 @@ def validate_context_config(
                 "generator.context.attention.number_of_heads must be "
                 "positive."
             )
-        elif generator_channels & attention.number_of_heads != 0:
+        elif generator_channels % attention.number_of_heads != 0:
             errors.append(
                 f"generator channels must be divisible by attention head count."
                 f"Got channels={generator_channels}, heads={attention.number_of_heads}"
@@ -508,11 +508,12 @@ def _validate_discriminator_config(
 ) -> None:
     discriminator = config.discriminator
 
-    if not discriminator.use_mpd and not discriminator.use_msd:
+    if not discriminator.use_mpd and not discriminator.use_msd and not discriminator.use_mrd:
         errors.append(
             "At least one discriminator family must be enabled. "
-            "Both discriminator.use_mpd and "
-            "discriminator.use_msd are false."
+            "Discriminator.use_mpd and "
+            "discriminator.use_msd and "
+            "discriminator.use_mrd are false."
         )
 
     mpd = discriminator.mpd

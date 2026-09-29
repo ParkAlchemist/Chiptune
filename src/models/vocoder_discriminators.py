@@ -5,7 +5,6 @@ from typing import TypeAlias
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorflow.python.ops import control_flow_grad
 from torch.nn.utils import parametrize
 from torch.nn.utils.parametrizations import weight_norm, spectral_norm
 
