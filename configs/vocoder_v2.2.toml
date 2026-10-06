@@ -1,7 +1,7 @@
 schema_version = 1
 
 [run]
-experiment_name = "cqt116_sr44100_hop256_bpo12_AAsnakebeta_ch256_eca_context"
+experiment_name = "v2.2"
 output_root = "runs/vocoder_cqt"
 seed = 1337
 device = "cuda"
@@ -28,9 +28,9 @@ drop_last = true
 [generator]
 activation = "snake_beta"
 upsample_initial_channel = 256
-upsample_rates = [8, 8, 2, 2]
-upsample_kernel_sizes = [16, 16, 4, 4]
-resblock_kernel_sizes = [3, 7, 11]
+upsample_rates = [8, 4, 4, 2]
+upsample_kernel_sizes = [16, 8, 8, 4]
+resblock_kernel_sizes = [3, 7, 15]
 resblock_dilation_sizes = [
     [1, 3, 5],
     [1, 3, 5],
@@ -63,15 +63,30 @@ residual = false
 [generator.context]
 enabled = true
 number_of_blocks = 4
-kernel_sizes = [7, 7, 7 ,7]
-dilations = [1, 1, 1, 1]
+block_type = "multi_kernel_convnext"
+kernel_size = 7
+dilation = 1
+multi_kernel_sizes = [3, 7, 15, 31]
+multi_kernel_dilations = [1, 1, 1, 1]
 expansion_ratio = 4
 layer_scale_initial = 1e-6
+use_grn = true
+grn_eps = 1e-6
+
+[generator.context.attention]
+enabled = true
+placement = 2
+number_of_heads = 8
+dropout = 0.0
+rope_base = 10000.0
+layer_scale_initial = 1e-4
+qkv_bias = true
+output_bias = true
 
 [discriminator]
 use_mpd = true
-use_msd = true
-use_mrd = false
+use_msd = false
+use_mrd = true
 
 [discriminator.mpd]
 periods = [2, 3, 5, 7, 11]
@@ -97,7 +112,9 @@ negative_slope = 0.2
 
 [discriminator.mrd]
 resolutions = [
+    [128, 32, 128],
     [256, 64, 256],
+    [512, 128, 512],
     [1024, 256, 1024],
     [2048, 512, 2048],
 ]
@@ -128,14 +145,30 @@ lambda_adversarial = 1.0
 lambda_feature_matching = 2.0
 lambda_mrstft = 2.5
 lambda_waveform = 0.5
+lambda_temporal_gradient = 0.5
 
 [loss.mrstft]
-fft_sizes = [256, 512, 1024, 2048]
-hop_sizes = [64, 128, 256, 512]
-win_lengths = [256, 512, 1024, 2048]
+fft_sizes = [128, 256, 512, 1024, 2048]
+hop_sizes = [32, 64, 128, 256, 512]
+win_lengths = [128, 256, 512, 1024, 2048]
 spectral_convergence_weight = 1.0
 log_magnitude_weight = 1.0
-eps = 1e-7
+eps = 1e-5
+
+[loss.feature_matching]
+normalization = "real_magnitude"
+scale_floor = 1e-2
+eps = 1e-8
+
+[loss.temporal_gradient]
+enabled = true
+lags = [1, 2, 4]
+normalization = "none"
+scale_floor = 1e-3
+eps = 1e-8
+edge_weighting = false
+edge_weight = 1.0
+max_edge_weight = 5.0
 
 [optimizer.generator]
 name = "adamw"
@@ -154,16 +187,20 @@ weight_decay = 0.0
 eps = 1e-8
 
 [scheduler.generator]
-name = "exponential"
+name = "cosine"
 enabled = true
 gamma = 0.999
-interval = "epoch"
+interval = "optimizer_step"
+t_max = 500000
+eta_min = 2e-5
 
 [scheduler.discriminator]
-name = "exponential"
+name = "cosine"
 enabled = true
 gamma = 0.999
-interval = "epoch"
+interval = "optimizer_step"
+t_max = 500000
+eta_min = 1e-5
 
 [training]
 epochs = 500
@@ -197,7 +234,7 @@ frequency_mask_probability = 0.0
 [logging]
 log_every_steps = 50
 status_every_steps = 50
-save_every_steps = 10000
+save_every_steps = 5000
 preview_every_steps = 10000
 preview_num_samples = 4
 keep_numbered_checkpoints = 10

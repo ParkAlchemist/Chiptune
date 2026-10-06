@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig
+from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
+    VocoderLossConfig, TemporalGradientLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -8,10 +9,7 @@ from src.models.vocoder_discriminators import (
     ScaleDiscriminatorConfig as ModelScaleConfig,
     VocoderDiscriminatorConfig as ModelDiscriminatorConfig,
 )
-from src.losses.vocoder_losses import (
-    MultiResolutionSTFTConfig as ModelMRSTFTConfig,
-    VocoderLossConfig as ModelLossConfig,
-)
+
 
 
 def build_generator_config(
@@ -33,10 +31,10 @@ def build_generator_config(
 
 def build_mrstft_config(
     experiment: VocoderExperimentConfig,
-) -> ModelMRSTFTConfig:
+) -> MRSTFTConfig:
     source = experiment.loss.mrstft
 
-    return ModelMRSTFTConfig(
+    return MRSTFTConfig(
         fft_sizes=source.fft_sizes,
         hop_sizes=source.hop_sizes,
         win_lengths=source.win_lengths,
@@ -48,17 +46,36 @@ def build_mrstft_config(
     )
 
 
+def build_temporal_gradient_config(
+        experiment: VocoderExperimentConfig,
+) -> TemporalGradientLossConfig:
+    source = experiment.loss.temporal_gradient
+
+    return TemporalGradientLossConfig(
+        enabled=source.enabled,
+        lags=source.lags,
+        normalization=source.normalization,
+        scale_floor=source.scale_floor,
+        eps=source.eps,
+        edge_weighting=source.edge_weighting,
+        edge_weight=source.edge_weight,
+        max_edge_weight=source.max_edge_weight,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
-) -> ModelLossConfig:
+) -> VocoderLossConfig:
     source = experiment.loss
 
-    return ModelLossConfig(
-        lambda_adv=source.lambda_adversarial,
+    return VocoderLossConfig(
+        lambda_adversarial=source.lambda_adversarial,
         lambda_feature_matching=source.lambda_feature_matching,
         lambda_mrstft=source.lambda_mrstft,
         lambda_waveform=source.lambda_waveform,
+        lambda_temporal_gradient=source.lambda_temporal_gradient,
         mrstft=build_mrstft_config(experiment),
+        temporal_gradient=build_temporal_gradient_config(experiment)
     )
 
 

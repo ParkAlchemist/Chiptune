@@ -7,6 +7,9 @@ import json
 import numpy as np
 import soundfile as sf
 import torch
+from matplotlib import pyplot as plt
+
+from src.eval.vocoder_diagnostics import create_diagnostic_figure, audio_to_cqt_norm, audio_to_stft_db
 
 
 def tensor_to_audio_np(x: torch.Tensor) -> np.ndarray:
@@ -51,6 +54,12 @@ def export_preview_wavs(
     num_samples: int,
     use_amp: bool,
     amp_dtype: torch.dtype,
+    writer = None,
+    global_step: int | None = None,
+    hop_length: int,
+    cqt_bins: int,
+    bins_per_octave: int,
+    fmin: float,
 ) -> None:
     preview_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,6 +137,76 @@ def export_preview_wavs(
                         ),
                     },
                 )
+
+                figure = create_diagnostic_figure(
+                    conditioning_cqt=cqt[item_index].detach().float().cpu().numpy(),
+                    real_cqt=audio_to_cqt_norm(
+                        y=real_np,
+                        sample_rate=sample_rate,
+                        hop_length=hop_length,
+                        n_bins=cqt_bins,
+                        bins_per_octave=bins_per_octave,
+                        fmin_hz=fmin,
+                    ),
+                    fake_cqt=audio_to_cqt_norm(
+                        y=fake_np,
+                        sample_rate=sample_rate,
+                        hop_length=hop_length,
+                        n_bins=cqt_bins,
+                        bins_per_octave=bins_per_octave,
+                        fmin_hz=fmin,
+                    ),
+                    real_stft=audio_to_stft_db(
+                        y=real_np,
+                        sample_rate=sample_rate,
+                        n_fft=1024,
+                        hop_length=hop_length,
+                    ),
+                    fake_stft=audio_to_stft_db(
+                        y=fake_np,
+                        sample_rate=sample_rate,
+                        n_fft=1024,
+                        hop_length=hop_length,
+                    ),
+                    real_audio=real_np,
+                    fake_audio=fake_np,
+                    sample_rate=sample_rate,
+                    title=f"Vocoder preview sample {written:04d}",
+                )
+
+                if (
+                        writer is not None
+                        and global_step is not None
+                ):
+                    tag = f"preview/sample_{written:04d}"
+
+                    writer.add_figure(
+                        f"{tag}/diagnostics",
+                        figure,
+                        global_step = global_step,
+                        close = True,
+                    )
+
+                    writer.add_audio(
+                        f"{tag}/real",
+                        torch.from_numpy(
+                            real_np
+                        ).unsqueeze(0),
+                        global_step = global_step,
+                        sample_rate = sample_rate,
+                    )
+
+                    writer.add_audio(
+                        f"{tag}/fake",
+                        torch.from_numpy(
+                            fake_np
+                        ).unsqueeze(0),
+                        global_step = global_step,
+                        sample_rate = sample_rate,
+                    )
+                else:
+                    plt.close(figure) \
+
 
                 written += 1
 

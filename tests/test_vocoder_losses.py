@@ -1,18 +1,19 @@
+import pytest
 import torch
 
+from src.config.vocoder_config import MRSTFTConfig
 from src.losses.vocoder_losses import (
-    MultiResolutionSTFTConfig,
     VocoderLossConfig,
     VocoderLossBundle,
     compute_vocoder_discriminator_loss,
-    compute_vocoder_generator_loss,
+    compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss,
 )
 
 
 def test_mrstft_loss_finite():
     bundle = VocoderLossBundle(
         VocoderLossConfig(
-            mrstft=MultiResolutionSTFTConfig(
+            mrstft=MRSTFTConfig(
                 fft_sizes=(256, 512),
                 hop_sizes=(64, 128),
                 win_lengths=(256, 512),
@@ -45,11 +46,11 @@ def test_vocoder_discriminator_loss_finite():
 def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
     bundle = VocoderLossBundle(
         VocoderLossConfig(
-            lambda_adv=1.0,
+            lambda_adversarial=1.0,
             lambda_feature_matching=2.0,
             lambda_mrstft=1.0,
             lambda_waveform=1.0,
-            mrstft=MultiResolutionSTFTConfig(
+            mrstft=MRSTFTConfig(
                 fft_sizes=(256,),
                 hop_sizes=(64,),
                 win_lengths=(256,),
@@ -93,3 +94,130 @@ def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
 
     assert fake_audio.grad is not None
     assert torch.isfinite(fake_audio.grad).all()
+
+
+def test_feature_matching_averages_layers_equally() -> None:
+    real_maps = [
+        [
+            torch.zeros(1, 1, 2),
+            torch.zeros(1, 1, 100),
+        ]
+    ]
+
+    fake_maps = [
+        [
+            torch.ones(1, 1, 2),
+            torch.full((1, 1, 100), 3.0),
+        ]
+    ]
+
+    loss = feature_matching_loss(real_maps, fake_maps, normalization="layer_mean")
+    assert loss.item() == pytest.approx(2.0)
+
+
+def test_feature_matching_normalizes_real_scale() -> None:
+    real_maps = [
+        [
+            torch.full((1, 1, 8), 2.0)
+        ]
+    ]
+
+    fake_maps = [
+        [
+            torch.full((1, 1, 8), 3.0)
+        ]
+    ]
+
+    loss = feature_matching_loss(real_maps, fake_maps, normalization="real_magnitude", scale_floor=0.01)
+
+    assert loss.item() == pytest.approx(0.5)
+
+
+def test_temporal_gradient_zero_for_exact_match() -> None:
+    loss_module = MultiScaleTemporalGradientLoss(
+        lags=(1, 2, 4)
+    )
+
+    waveform = torch.randn(2, 1, 128)
+
+    loss = loss_module(waveform, waveform)
+
+    assert loss.item() == pytest.approx(0.0)
+
+
+def test_temporal_gradient_is_polarity_sensitive() -> None:
+    loss_module = MultiScaleTemporalGradientLoss(
+        lags=(1, 2, 4)
+    )
+
+    waveform = torch.randn(2, 1, 128)
+
+    loss = loss_module(-waveform, waveform)
+
+    assert loss.item() > 0.0
+
+
+def test_temporal_gradient_backpropagates() -> None:
+    loss_module = MultiScaleTemporalGradientLoss(
+        lags=(1, 2, 4)
+    )
+
+    prediction = torch.randn(2, 1, 128, requires_grad=True)
+
+    target = torch.randn(2, 1, 128)
+
+    loss = loss_module(prediction, target)
+
+    loss.backward()
+
+    assert prediction.grad is not None
+    assert torch.isfinite(prediction.grad).all()
+
+
+def test_temporal_gradient_prefers_correct_edges() -> None:
+    target = torch.tensor(
+        [
+            [
+                [
+                    -1.0,
+                    -1.0,
+                    -1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    -1.0,
+                    -1.0,
+                ]
+            ]
+        ]
+    )
+
+    correct = target.clone()
+
+    smoothed = torch.tensor(
+        [
+            [
+                [
+                    -1.0,
+                    -0.8,
+                    -0.2,
+                    0.4,
+                    1.0,
+                    0.5,
+                    -0.3,
+                    -1.0,
+                ]
+            ]
+        ]
+    )
+
+    loss_module = MultiScaleTemporalGradientLoss(
+        lags=(1, 2)
+    )
+
+    correct_loss = loss_module(correct, target)
+    smoothed_loss = loss_module(smoothed, target)
+
+    assert correct_loss < smoothed_loss
+
+

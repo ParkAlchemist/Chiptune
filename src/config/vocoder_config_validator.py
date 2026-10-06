@@ -818,6 +818,26 @@ def _validate_loss_config(
 
     _validate_mrstft_config(loss.mrstft, errors)
 
+    feature_matching = loss.feature_matching
+
+    if feature_matching.normalization not in {"layer_mean", "real_magnitude"}:
+        errors.append(
+            f"{feature_matching.normalization} must be one of "
+            "layer_norm, real_magnitude."
+        )
+
+    if feature_matching.scale_floor <= 0.0:
+        errors.append(
+            f"{feature_matching.scale_floor} must be positive, "
+            f"got {feature_matching.scale_floor}."
+        )
+
+    if feature_matching.eps <= 0.0:
+        errors.append(
+            f"{feature_matching.eps} must be positive, "
+            f"got {feature_matching.eps}."
+        )
+
 
 def _validate_optimizer_config(
     optimizer: OptimizerConfig,
@@ -862,7 +882,7 @@ def _validate_scheduler_config(
     if not scheduler.enabled:
         return
 
-    if scheduler.name not in {"none", "exponential"}:
+    if scheduler.name not in {"none", "exponential", "cosine"}:
         errors.append(
             f"{path}.name has unsupported value {scheduler.name!r}."
         )
@@ -886,6 +906,17 @@ def _validate_scheduler_config(
         if not 0.0 < scheduler.gamma < 1.0:
             errors.append(
                 f"{path}.gamma must be in (0, 1] for ExponentialLR, got {scheduler.gamma}."
+            )
+
+    if scheduler.name == "cosine":
+        if scheduler.t_max <= 0:
+            errors.append(
+                f"{path}.t_max must be positive, got {scheduler.t_max}."
+            )
+
+        if scheduler.eta_min < 0.0:
+            errors.append(
+                f"{path}.eta_min must be positive, got {scheduler.eta_min}."
             )
 
 

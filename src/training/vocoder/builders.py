@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 
 from src.config.vocoder_config import (
@@ -44,6 +46,50 @@ def build_optimizer(
     )
 
 
+def build_fixed_floor_cosine_scheduler(
+        optimizer: torch.optim.Optimizer,
+        *,
+        t_max: int,
+        eta_min: float,
+) -> torch.optim.lr_scheduler.LambdaLR:
+
+    if t_max <= 0:
+        raise ValueError(
+            f"t_max must be greater than 0. Got {t_max}."
+        )
+
+    base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+
+    if len(set(base_lrs)) != 1:
+        raise ValueError(
+            f"base_lrs must contain only one element. Got {base_lrs}"
+        )
+
+    base_lr = base_lrs[0]
+
+    if not 0.0 <= eta_min <= base_lr:
+        raise ValueError(
+           f"eta_min must be non-negative and smaller than base_lr={base_lr}, got eta_min={eta_min}"
+        )
+
+    minimum_multiplier = eta_min / base_lr
+
+    def lr_multiplier(step: int) -> float:
+        progress = min(
+            max(step, 0),
+            t_max,
+        ) / t_max
+
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return minimum_multiplier + (1.0 - minimum_multiplier) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lr_multiplier,
+    )
+
+
 def build_scheduler(
     optimizer: torch.optim.Optimizer,
     config: SchedulerConfig,
@@ -55,6 +101,13 @@ def build_scheduler(
         return torch.optim.lr_scheduler.ExponentialLR(
             optimizer,
             gamma=config.gamma,
+        )
+
+    if config.name == "cosine":
+        return build_fixed_floor_cosine_scheduler(
+            optimizer,
+            t_max=config.t_max,
+            eta_min=config.eta_min,
         )
 
     raise ValueError(

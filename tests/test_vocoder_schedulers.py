@@ -3,7 +3,7 @@ import torch
 
 
 from src.config.vocoder_config import SchedulerConfig
-from src.training.vocoder.builders import build_scheduler
+from src.training.vocoder.builders import build_scheduler, build_fixed_floor_cosine_scheduler
 from src.training.vocoder.schedulers import step_scheduler
 
 
@@ -145,5 +145,31 @@ def test_scheduler_state_roundtrip() -> None:
             first_optimizer.param_groups[0]["lr"]
         )
     )
+
+
+def test_fixed_floor_cosine_reaches_and_holds_minimum() -> None:
+    model = torch.nn.Linear(4, 1)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=1.0,
+    )
+
+    scheduler = build_fixed_floor_cosine_scheduler(
+        optimizer,
+        t_max=10,
+        eta_min=0.1,
+    )
+
+    learning_rates = []
+
+    for _ in range(15):
+        optimizer.step()
+        scheduler.step()
+
+        learning_rates.append(optimizer.param_groups[0]["lr"])
+
+    assert learning_rates[9] == pytest.approx(0.1, abs=1e-6)
+
+    assert all(learning_rate == pytest.approx(0.1, abs=1e-6) for learning_rate in learning_rates[9:])
 
 

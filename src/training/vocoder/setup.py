@@ -19,6 +19,11 @@ from src.training.vocoder.runtime import (
     create_run_directories,
     configure_stop_controller,
 )
+from src.training.vocoder.logging import (
+    write_model_manifest,
+    write_model_structure,
+    write_torchinfo_generator_summary,
+)
 
 
 def build_training_runtime(
@@ -50,6 +55,41 @@ def build_training_runtime(
         device,
     )
 
+    write_model_structure(
+        generator=components.models.generator,
+        discriminator=(
+            components.models.discriminator
+        ),
+        output_path=(
+                paths.run_dir / "model_structure.txt"
+        ),
+    )
+
+    manifest = write_model_manifest(
+        generator=components.models.generator,
+        discriminator=(
+            components.models.discriminator
+        ),
+        output_path=(
+                paths.run_dir / "model_structure.json"
+        ),
+    )
+
+    torchinfo_text = (
+        write_torchinfo_generator_summary(
+            generator=components.models.generator,
+            output_path=(
+                    paths.run_dir
+                    / "torchinfo_generator.txt"
+            ),
+            cqt_bins=config.data.cqt_bins,
+            segment_frames=(
+                config.data.segment_frames
+            ),
+            device=device,
+        )
+    )
+
     writer = None
 
     if config.logging.tensorboard:
@@ -64,6 +104,29 @@ def build_training_runtime(
                 "WARNING: TensorBoard writer unavailable: "
                 f"{exc}"
             )
+
+    if writer is not None:
+        writer.add_text(
+            "model/torchinfo_generator",
+            f"```\n{torchinfo_text}\n```",
+            global_step=0,
+        )
+
+        writer.add_scalar(
+            "model/generator_parameter_count",
+            manifest["generator"][
+                "parameter_count"
+            ],
+            global_step=0,
+        )
+
+        writer.add_scalar(
+            "model/discriminator_parameter_count",
+            manifest["discriminator"][
+                "parameter_count"
+            ],
+            global_step=0,
+        )
 
     stop_controller = configure_stop_controller(
         config.control

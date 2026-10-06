@@ -28,11 +28,12 @@ from src.training.vocoder.checkpointing import (
     prune_numbered_checkpoints,
     save_checkpoint,
 )
-from src.training.vocoder.logging import (
-    write_status,
-)
 from src.training.vocoder.preview import (
     export_preview_wavs,
+)
+from src.training.vocoder.logging import (
+    collect_context_parameter_metrics,
+    write_status,
 )
 
 @dataclass
@@ -299,13 +300,21 @@ def run_epoch(
         step = state.global_step
 
         if (
-            runtime.writer is not None
-            and should_run(
-                step,
-                config.logging.log_every_steps,
-            )
+                runtime.writer is not None
+                and should_run(
+            step,
+            config.logging.log_every_steps,
+        )
         ):
-            for key, value in losses.items():
+            log_values = dict(losses)
+
+            log_values.update(
+                collect_context_parameter_metrics(
+                    components.models.generator
+                )
+            )
+
+            for key, value in log_values.items():
                 runtime.writer.add_scalar(
                     key,
                     value,
@@ -359,6 +368,12 @@ def run_epoch(
                 amp_dtype=amp_dtype_from_name(
                     config.amp.dtype
                 ),
+                writer=runtime.writer,
+                global_step=step,
+                hop_length=config.data.hop_length,
+                cqt_bins=config.data.cqt_bins,
+                bins_per_octave=config.data.bins_per_octave,
+                fmin=config.data.fmin,
             )
 
             state.latest_preview = str(preview_path)

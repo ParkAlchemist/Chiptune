@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 from contextlib import nullcontext
 
@@ -8,26 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-@dataclass
-class MultiResolutionSTFTConfig:
-    fft_sizes: tuple[int, ...] = (512, 1024, 2048)
-    hop_sizes: tuple[int, ...] = (128, 256, 512)
-    win_lengths: tuple[int, ...] = (512, 1024, 2048)
-
-    eps: float = 1e-7
-    spectral_convergence_weight: float = 1.0
-    log_magnitude_weight: float = 1.0
-
-
-@dataclass
-class VocoderLossConfig:
-    lambda_adv: float = 1.0
-    lambda_feature_matching: float = 2.0
-    lambda_mrstft: float = 45.0
-    lambda_waveform: float = 1.0
-
-    mrstft: MultiResolutionSTFTConfig = field(default_factory=MultiResolutionSTFTConfig)
+from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig
 
 
 @dataclass
@@ -37,6 +18,7 @@ class VocoderGeneratorLossOutput:
     feature_matching: torch.Tensor
     mrstft: torch.Tensor
     waveform: torch.Tensor
+    temporal_gradient: torch.Tensor
 
 
 @dataclass
@@ -150,7 +132,7 @@ class MultiResolutionSTFTLoss(nn.Module):
 
     def __init__(
         self,
-        config: MultiResolutionSTFTConfig = MultiResolutionSTFTConfig(),
+        config: MRSTFTConfig = MRSTFTConfig(),
     ) -> None:
         super().__init__()
 
@@ -218,6 +200,15 @@ class VocoderLossBundle(nn.Module):
 
         self.config = config
         self.mrstft_loss = MultiResolutionSTFTLoss(config.mrstft)
+        self.temporal_gradient_loss = MultiScaleTemporalGradientLoss(
+            lags=config.temporal_gradient.lags,
+            normalization=config.temporal_gradient.normalization,
+            scale_floor=config.temporal_gradient.scale_floor,
+            eps=config.temporal_gradient.eps,
+            edge_weighting=config.temporal_gradient.edge_weighting,
+            edge_weight=config.temporal_gradient.edge_weight,
+            max_edge_weight=config.temporal_gradient.max_edge_weight,
+        ) if config.temporal_gradient.enabled else None
 
 
 def lsgan_discriminator_loss(
@@ -273,9 +264,35 @@ def waveform_loss(
     return F.l1_loss(input=fake_audio, target=real_audio)
 
 
+def generator_family_feature_matching_losses(
+    discriminator_outputs: dict[str, list],
+) -> dict[str, torch.Tensor]:
+    losses: dict[str, torch.Tensor] = {}
+
+    for family in ("mpd", "msd", "mrd"):
+        real_maps = discriminator_outputs[
+            f"{family}_real_feature_maps"
+        ]
+        fake_maps = discriminator_outputs[
+            f"{family}_fake_feature_maps"
+        ]
+
+        if real_maps:
+            losses[family] = feature_matching_loss(
+                real_maps,
+                fake_maps,
+            )
+
+    return losses
+
+
 def feature_matching_loss(
     real_feature_maps: list[list[torch.Tensor]],
     fake_feature_maps: list[list[torch.Tensor]],
+    *,
+    normalization: str = "layer_mean",
+    scale_floor: float = 1e-2,
+    eps: float = 1e-8,
 ) -> torch.Tensor:
     if len(real_feature_maps) != len(fake_feature_maps):
         raise ValueError(
@@ -294,24 +311,174 @@ def feature_matching_loss(
                 "must match."
             )
 
-        layer_losses = [
-            F.l1_loss(
-                fake_layer,
-                real_layer.detach(),
-            )
-            for real_layer, fake_layer in zip(
-                real_layers,
-                fake_layers,
-            )
-        ]
+        layer_losses: list[torch.Tensor] = []
+
+        for real_layer, fake_layer in zip(real_layers, fake_layers):
+            real_reference = real_layer.detach()
+
+            difference = F.l1_loss(fake_layer, real_reference, reduction="mean")
+
+            if normalization == "layer_mean":
+                layer_loss = difference
+            elif normalization == "real_magnitude":
+                reference_scale = real_reference.abs().mean().clamp_min(max(scale_floor, eps))
+                layer_loss = difference / reference_scale
+            else:
+                raise ValueError(
+                    f"Unknown feature-matching normalization: {normalization}"
+                )
+
+            layer_losses.append(layer_loss)
+
+        discriminator_loss = torch.stack(layer_losses).mean()
 
         discriminator_losses.append(
-            torch.stack(layer_losses).mean()
+            discriminator_loss
         )
 
     return torch.stack(
         discriminator_losses
     ).mean()
+
+
+def lagged_difference(
+        waveform: torch.Tensor,
+        lag: int,
+) -> torch.Tensor:
+    if waveform.ndim != 3:
+        raise ValueError(
+            f"Expected waveform [B, C, T], got {tuple(waveform.shape)}"
+        )
+
+    if lag <= 0:
+        raise ValueError(
+            f"lag must be positive, got {lag}"
+        )
+
+    if waveform.shape[-1] <= lag:
+        raise ValueError(
+            f"Waveform must be longer than lag, got Length={waveform.shape[-1]}, lag={lag}"
+        )
+
+    return waveform[..., lag:] - waveform[..., :-lag]
+
+
+class MultiScaleTemporalGradientLoss(nn.Module):
+    def __init__(
+            self,
+            *,
+            lags: tuple[int, ...] = (1, 2, 4),
+            normalization: str = "none",
+            scale_floor: float = 1e-3,
+            eps: float = 1e-8,
+            edge_weighting: bool = False,
+            edge_weight: float = 1.0,
+            max_edge_weight: float = 5.0,
+    ) -> None:
+        super().__init__()
+
+        if not lags:
+            raise ValueError("TemporalGradientLoss requires at least one lag")
+
+        if any(lag <= 0 for lag in lags):
+            raise ValueError("TemporalGradientLoss lags must be positive, "
+                             f"got lags={lags}")
+
+        if len(set(lags)) != len(lags):
+            raise ValueError(
+                f"Temporal gradient lags must be unique, got lags={lags}"
+            )
+
+        if normalization not in {"none", "target_magnitude"}:
+            raise ValueError(
+                f"Unsupported temporal gradient normalization: {normalization!r}"
+            )
+
+        if scale_floor <= 0.0:
+            raise ValueError(
+                f"Scale floor must be positive, got {scale_floor}"
+            )
+
+        if eps <= 0.0:
+            raise ValueError(
+                f"Eps must be positive, got {eps}"
+            )
+
+        if edge_weight < 0.0:
+            raise ValueError(
+                f"Edge weight must be positive, got {edge_weight}"
+            )
+
+        if max_edge_weight < 1.0:
+            raise ValueError(
+                f"max_edge_weight must be at least 1, got {max_edge_weight}"
+            )
+
+        self.lags = tuple(sorted(lags))
+        self.normalization = normalization
+        self.scale_floor = scale_floor
+        self.eps = eps
+        self.edge_weighting = edge_weighting
+        self.edge_weight = edge_weight
+        self.max_edge_weight = max_edge_weight
+
+    def forward(
+            self,
+            prediction: torch.Tensor,
+            target: torch.Tensor,
+    ) -> torch.Tensor:
+        if prediction.shape != target.shape:
+            raise ValueError(
+                f"Prediction and target shapes do not match. "
+                f"Prediction: {tuple(prediction.shape)}, target: {tuple(target.shape)}"
+            )
+
+        per_scale_losses: list[torch.Tensor] = []
+
+        for lag in self.lags:
+            prediction_difference = lagged_difference(prediction, lag)
+            target_difference = lagged_difference(target, lag)
+
+            absolute_error = (prediction_difference - target_difference).abs()
+
+            if self.edge_weighting:
+                target_scale = target_difference.detach().abs().mean(dim=-1, keepdim=True).clamp_min(max(self.scale_floor, self.eps))
+                relative_edge_strength = target_difference.detach().abs() / target_scale
+
+                weights = (1.0 + self.edge_weight * relative_edge_strength).clamp(max=self.max_edge_weight)
+
+                absolute_error = absolute_error * weights
+
+            scale_loss = absolute_error.mean()
+
+            if self.normalization == "target_magnitude":
+                reference_scale = target_difference.detach().abs().mean().clamp_min(max(self.scale_floor, self.eps))
+                scale_loss = scale_loss / reference_scale
+
+            per_scale_losses.append(scale_loss)
+
+        return torch.stack(per_scale_losses).mean()
+
+
+
+def generator_family_adversarial_losses(
+    discriminator_outputs: dict[str, list],
+) -> dict[str, torch.Tensor]:
+    losses: dict[str, torch.Tensor] = {}
+
+    for family in ("mpd", "msd", "mrd"):
+        fake_outputs = discriminator_outputs[
+            f"{family}_fake_outputs"
+        ]
+
+        if fake_outputs:
+            losses[family] = (
+                lsgan_generator_adversarial_loss(
+                    fake_outputs
+                )
+            )
+
+    return losses
 
 
 def compute_vocoder_generator_loss(
@@ -338,6 +505,9 @@ def compute_vocoder_generator_loss(
     loss_fm = feature_matching_loss(
         discriminator_outputs["real_feature_maps"],
         discriminator_outputs["fake_feature_maps"],
+        normalization=cfg.feature_matching.normalization,
+        scale_floor=cfg.feature_matching.scale_floor,
+        eps=cfg.feature_matching.eps,
     )
 
     loss_mrstft = loss_bundle.mrstft_loss(
@@ -350,11 +520,20 @@ def compute_vocoder_generator_loss(
         real_audio=real_audio,
     )
 
+    if cfg.temporal_gradient.enabled:
+        loss_temporal_gradient = loss_bundle.temporal_gradient_loss(
+            prediction=fake_audio,
+            target=real_audio,
+        )
+    else:
+        loss_temporal_gradient = fake_audio.new_zeros(())
+
     total = (
-        cfg.lambda_adv * loss_adv
+        cfg.lambda_adversarial * loss_adv
         + cfg.lambda_feature_matching * loss_fm
         + cfg.lambda_mrstft * loss_mrstft
         + cfg.lambda_waveform * loss_waveform
+        + cfg.lambda_temporal_gradient * loss_temporal_gradient
     )
 
     return VocoderGeneratorLossOutput(
@@ -363,7 +542,37 @@ def compute_vocoder_generator_loss(
         feature_matching=loss_fm,
         mrstft=loss_mrstft,
         waveform=loss_waveform,
+        temporal_gradient=loss_temporal_gradient,
     )
+
+
+def discriminator_family_losses(
+    discriminator_outputs: dict[str, list],
+) -> dict[str, VocoderDiscriminatorLossOutput]:
+    family_losses: dict[
+        str,
+        VocoderDiscriminatorLossOutput,
+    ] = {}
+
+    for family in ("mpd", "msd", "mrd"):
+        real_outputs = discriminator_outputs[
+            f"{family}_real_outputs"
+        ]
+        fake_outputs = discriminator_outputs[
+            f"{family}_fake_outputs"
+        ]
+
+        if not real_outputs:
+            continue
+
+        family_losses[family] = (
+            lsgan_discriminator_loss(
+                real_outputs=real_outputs,
+                fake_outputs=fake_outputs,
+            )
+        )
+
+    return family_losses
 
 
 def compute_vocoder_discriminator_loss(

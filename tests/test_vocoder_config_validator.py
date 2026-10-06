@@ -106,6 +106,7 @@ def test_at_least_one_discriminator_required():
     config = make_valid_config()
     config.discriminator.use_mpd = False
     config.discriminator.use_msd = False
+    config.discriminator.use_mrd = False
 
     with pytest.raises(
         ConfigValidationError,

@@ -11,7 +11,12 @@ from src.losses.vocoder_losses import (
     VocoderLossBundle,
     compute_vocoder_discriminator_loss,
     compute_vocoder_generator_loss,
-    detach_vocoder_loss_dict,
+    detach_vocoder_loss_dict, discriminator_family_losses, generator_family_adversarial_losses,
+    generator_family_feature_matching_losses,
+)
+from src.training.vocoder.logging import (
+    discriminator_branch_metrics,
+    discriminator_health_metrics,
 )
 
 
@@ -79,6 +84,28 @@ def vocoder_train_micro_step(
 
         discriminator_losses = compute_vocoder_discriminator_loss(discriminator_outputs_d)
 
+        health_metrics = discriminator_health_metrics(
+            discriminator_outputs_d
+        )
+
+        health_metrics.update(
+            discriminator_branch_metrics(
+                discriminator_outputs_d,
+                mpd_periods=(
+                    discriminator.config.mpd.periods,
+                ),
+                mrd_resolutions=(
+                    discriminator.config.mrd.resolutions
+                ),
+            )
+        )
+
+        discriminator_family = (
+            discriminator_family_losses(
+                discriminator_outputs_d
+            )
+        )
+
         loss_d_total = discriminator_losses.total
         loss_d_backward = loss_d_total / loss_divisor
 
@@ -112,6 +139,18 @@ def vocoder_train_micro_step(
                 loss_bundle=loss_bundle,
             )
 
+            generator_adversarial_family = (
+                generator_family_adversarial_losses(
+                    discriminator_outputs_g
+                )
+            )
+
+            generator_feature_family = (
+                generator_family_feature_matching_losses(
+                    discriminator_outputs_g
+                )
+            )
+
             loss_g_total = generator_losses.total
             loss_g_backward = loss_g_total / loss_divisor
 
@@ -129,9 +168,119 @@ def vocoder_train_micro_step(
         "loss_g_feature_matching": float(generator_losses.feature_matching.detach().cpu()),
         "loss_g_mrstft": float(generator_losses.mrstft.detach().cpu()),
         "loss_g_waveform": float(generator_losses.waveform.detach().cpu()),
+        "loss_g_temporal_gradient": float(generator_losses.temporal_gradient.detach().cpu()),
         "loss_d_real": float(discriminator_losses.real.detach().cpu()),
         "loss_d_fake": float(discriminator_losses.fake.detach().cpu()),
+        **health_metrics,
     }
+
+    for family, family_loss in (
+            discriminator_family.items()
+    ):
+        losses[
+            f"loss_d_{family}_total"
+        ] = float(
+            family_loss.total.detach().cpu()
+        )
+        losses[
+            f"loss_d_{family}_real"
+        ] = float(
+            family_loss.real.detach().cpu()
+        )
+        losses[
+            f"loss_d_{family}_fake"
+        ] = float(
+            family_loss.fake.detach().cpu()
+        )
+
+    for family, value in (
+            generator_adversarial_family.items()
+    ):
+        losses[
+            f"loss_g_adversarial_{family}"
+        ] = float(value.detach().cpu())
+
+    for family, value in (
+            generator_feature_family.items()
+    ):
+        losses[
+            f"loss_g_feature_matching_{family}"
+        ] = float(value.detach().cpu())
+
+    fake_detached = (
+        fake_audio_for_g.detach().float()
+    )
+
+    losses.update(
+        {
+            "generator_output/rms": float(
+                fake_detached
+                .square()
+                .mean()
+                .sqrt()
+                .cpu()
+            ),
+            "generator_output/peak": float(
+                fake_detached
+                .abs()
+                .max()
+                .cpu()
+            ),
+            "generator_output/mean": float(
+                fake_detached.mean().cpu()
+            ),
+            "generator_output/std": float(
+                fake_detached.std(
+                    unbiased=False
+                ).cpu()
+            ),
+            "generator_output/tanh_saturation_fraction": float(
+                (
+                        fake_detached.abs() >= 0.99
+                )
+                .float()
+                .mean()
+                .cpu()
+            ),
+        }
+    )
+
+    cfg = loss_bundle.config
+
+    losses.update(
+        {
+            "loss_g_weighted/adversarial": float(
+                (
+                        cfg.lambda_adversarial
+                        * generator_losses.adversarial
+                ).detach().cpu()
+            ),
+            "loss_g_weighted/feature_matching": float(
+                (
+                        cfg.lambda_feature_matching
+                        * generator_losses.feature_matching
+                ).detach().cpu()
+            ),
+            "loss_g_weighted/mrstft": float(
+                (
+                        cfg.lambda_mrstft
+                        * generator_losses.mrstft
+                ).detach().cpu()
+            ),
+            "loss_g_weighted/waveform": float(
+                (
+                        cfg.lambda_waveform
+                        * generator_losses.waveform
+                ).detach().cpu()
+            ),
+            "loss_g_weighted/temporal_gradient": float(
+                (
+                        cfg.lambda_temporal_gradient
+                        * generator_losses.temporal_gradient
+                ).detach().cpu()
+            ),
+        }
+    )
 
     return VocoderMicroStepResult(losses=losses, batch_size=int(cqt.shape[0]))
 

@@ -9,6 +9,7 @@ def test_default_vocoder_experiment_config():
     assert config.generator.activation == "snake_beta"
     assert config.generator.upsample_rates == (8, 8, 4, 2)
     assert config.loss.mrstft.fft_sizes == (
+        128,
         256,
         512,
         1024,

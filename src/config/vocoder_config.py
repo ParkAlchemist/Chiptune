@@ -6,9 +6,10 @@ from typing import Literal
 
 NormType = Literal["weight",  "spectral", "none"]
 ActivationType = Literal["leaky_relu", "snake_beta"]
-SchedulerName = Literal["none", "exponential"]
+SchedulerName = Literal["none", "exponential", "cosine"]
 SchedulerInterval = Literal["epoch", "optimizer_step"]
 ContextBlockType = Literal["convnext", "multi_kernel_convnext"]
+FeatureMatchingNormalization = Literal["layer_mean", "real_magnitude"]
 
 
 @dataclass
@@ -35,6 +36,8 @@ class SchedulerConfig:
     enabled: bool = False
     gamma: float = 0.999
     interval: SchedulerInterval = "epoch"
+    t_max: int = 500
+    eta_min: float = 0.0
 
 
 @dataclass
@@ -93,12 +96,33 @@ class ControlConfig:
 
 @dataclass
 class MRSTFTConfig:
-    fft_sizes: tuple[int, ...] = (256, 512, 1024, 2048)
-    hop_sizes: tuple[int, ...] = (64, 128, 256, 512)
-    win_lengths: tuple[int, ...] = (256, 512, 1024, 2048)
+    fft_sizes: tuple[int, ...] = (128, 256, 512, 1024, 2048)
+    hop_sizes: tuple[int, ...] = (32, 64, 128, 256, 512)
+    win_lengths: tuple[int, ...] = (128, 256, 512, 1024, 2048)
     spectral_convergence_weight: float = 1.0
     log_magnitude_weight: float = 1.0
     eps: float = 1e-7
+
+
+@dataclass
+class FeatureMatchingLossConfig:
+    normalization: FeatureMatchingNormalization = "layer_mean"
+    scale_floor: float = 1e-2
+    eps: float = 1e-8
+
+
+@dataclass
+class TemporalGradientLossConfig:
+    enabled: bool = False
+
+    lags: tuple[int, ...] = (1, 2, 4)
+    normalization: Literal["none", "target_magnitude"] = "none"
+    scale_floor: float = 1e-3
+    eps: float = 1e-8
+
+    edge_weighting: bool = False
+    edge_weight: float = 1.0
+    max_edge_weight: float = 5.0
 
 
 @dataclass
@@ -107,8 +131,11 @@ class VocoderLossConfig:
     lambda_feature_matching: float = 2.0
     lambda_mrstft: float = 45.0
     lambda_waveform: float = 1.0
+    lambda_temporal_gradient: float = 1.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
+    feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
+    temporal_gradient: TemporalGradientLossConfig = field(default_factory=TemporalGradientLossConfig)
 
 
 @dataclass
