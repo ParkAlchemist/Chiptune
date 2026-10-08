@@ -167,6 +167,8 @@ def vocoder_train_micro_step(
         "loss_g_adversarial": float(generator_losses.adversarial.detach().cpu()),
         "loss_g_feature_matching": float(generator_losses.feature_matching.detach().cpu()),
         "loss_g_mrstft": float(generator_losses.mrstft.detach().cpu()),
+        "loss_g_mrstft_spectral_convergence": float(generator_losses.mrstft_output.spectral_convergence.detach().cpu()),
+        "loss_g_mrstft_log_magnitude": float(generator_losses.mrstft_output.log_magnitude.detach().cpu()),
         "loss_g_waveform": float(generator_losses.waveform.detach().cpu()),
         "loss_g_temporal_gradient": float(generator_losses.temporal_gradient.detach().cpu()),
         "loss_d_real": float(discriminator_losses.real.detach().cpu()),
@@ -281,6 +283,26 @@ def vocoder_train_micro_step(
             ),
         }
     )
+
+    for resolution in generator_losses.mrstft_output.resolutions:
+        prefix = (
+            "loss_g_mrstft_resolution/"
+            f"fft_{resolution.fft_size}"
+            f"_hop_{resolution.hop_size}"
+            f"_win_{resolution.win_length}"
+        )
+
+        losses[f"{prefix}/spectral_convergence"] = float(
+            resolution.spectral_convergence.detach().cpu()
+        )
+
+        losses[f"{prefix}/log_magnitude"] = float(
+            resolution.log_magnitude.detach().cpu()
+        )
+
+        losses[f"{prefix}/total"] = float(
+            resolution.total.detach().cpu()
+        )
 
     return VocoderMicroStepResult(losses=losses, batch_size=int(cqt.shape[0]))
 

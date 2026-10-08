@@ -6,7 +6,7 @@ from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
     compute_vocoder_discriminator_loss,
-    compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss,
+    compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss, MultiResolutionSTFTLoss,
 )
 
 
@@ -219,5 +219,238 @@ def test_temporal_gradient_prefers_correct_edges() -> None:
     smoothed_loss = loss_module(smoothed, target)
 
     assert correct_loss < smoothed_loss
+
+
+def test_mrstft_components_are_zero_for_exact_match() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256),
+        hop_sizes=(32, 64),
+        win_lengths=(128, 256),
+        spectral_convergence_weight=1.0,
+        log_magnitude_weight=1.0,
+        eps=1e-7,
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        2048,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+    assert (
+        output.spectral_convergence.item()
+        == pytest.approx(
+            0.0,
+            abs=1e-6,
+        )
+    )
+
+    assert (
+        output.log_magnitude.item()
+        == pytest.approx(
+            0.0,
+            abs=1e-6,
+        )
+    )
+
+    assert len(output.resolutions) == 2
+
+
+def test_mrstft_total_matches_components() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256),
+        hop_sizes=(32, 64),
+        win_lengths=(128, 256),
+        spectral_convergence_weight=2.0,
+        log_magnitude_weight=0.5,
+        eps=1e-7,
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    fake = torch.randn(2, 1, 2048)
+    real = torch.randn(2, 1, 2048)
+
+    output = loss_function(fake, real)
+
+    expected = (
+        config.spectral_convergence_weight
+        * output.spectral_convergence
+        + config.log_magnitude_weight
+        * output.log_magnitude
+    )
+
+    assert torch.allclose(
+        output.total,
+        expected,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+
+def test_mrstft_reports_every_resolution() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256, 512),
+        hop_sizes=(32, 64, 128),
+        win_lengths=(128, 256, 512),
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    fake = torch.randn(1, 1, 2048)
+    real = torch.randn(1, 1, 2048)
+
+    output = loss_function(fake, real)
+
+    metadata = [
+        (
+            resolution.fft_size,
+            resolution.hop_size,
+            resolution.win_length,
+        )
+        for resolution in output.resolutions
+    ]
+
+    assert metadata == [
+        (128, 32, 128),
+        (256, 64, 256),
+        (512, 128, 512),
+    ]
+
+
+def test_mrstft_means_match_resolution_outputs() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256),
+        hop_sizes=(32, 64),
+        win_lengths=(128, 256),
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    fake = torch.randn(1, 1, 2048)
+    real = torch.randn(1, 1, 2048)
+
+    output = loss_function(fake, real)
+
+    expected_convergence = torch.stack(
+        [
+            resolution.spectral_convergence
+            for resolution in output.resolutions
+        ]
+    ).mean()
+
+    expected_log_magnitude = torch.stack(
+        [
+            resolution.log_magnitude
+            for resolution in output.resolutions
+        ]
+    ).mean()
+
+    assert torch.allclose(
+        output.spectral_convergence,
+        expected_convergence,
+    )
+
+    assert torch.allclose(
+        output.log_magnitude,
+        expected_log_magnitude,
+    )
+
+
+def test_mrstft_structured_output_backpropagates() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256),
+        hop_sizes=(32, 64),
+        win_lengths=(128, 256),
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    fake = torch.randn(
+        2,
+        1,
+        2048,
+        requires_grad=True,
+    )
+
+    real = torch.randn(
+        2,
+        1,
+        2048,
+    )
+
+    output = loss_function(fake, real)
+
+    output.total.backward()
+
+    assert fake.grad is not None
+    assert torch.isfinite(fake.grad).all()
+    assert fake.grad.abs().sum() > 0
+
+
+def test_structured_mrstft_matches_legacy_scalar() -> None:
+    config = MRSTFTConfig(
+        fft_sizes=(128, 256),
+        hop_sizes=(32, 64),
+        win_lengths=(128, 256),
+        spectral_convergence_weight=1.3,
+        log_magnitude_weight=0.7,
+    )
+
+    loss_function = MultiResolutionSTFTLoss(
+        config
+    )
+
+    fake = torch.randn(2, 1, 2048)
+    real = torch.randn(2, 1, 2048)
+
+    output = loss_function(fake, real)
+
+    legacy_resolution_totals = []
+
+    for single_loss in loss_function.losses:
+        convergence, log_magnitude = (
+            single_loss(fake, real)
+        )
+
+        legacy_resolution_totals.append(
+            config.spectral_convergence_weight
+            * convergence
+            + config.log_magnitude_weight
+            * log_magnitude
+        )
+
+    legacy_total = torch.stack(
+        legacy_resolution_totals
+    ).mean()
+
+    assert torch.allclose(
+        output.total,
+        legacy_total,
+        atol=1e-7,
+        rtol=1e-6,
+    )
 
 

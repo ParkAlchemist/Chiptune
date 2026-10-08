@@ -11,14 +11,53 @@ import torch.nn.functional as F
 from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig
 
 
+
+@dataclass(frozen=True)
+class STFTResolutionLossOutput:
+    fft_size: int
+    hop_size: int
+    win_length: int
+
+    spectral_convergence: torch.Tensor
+    log_magnitude: torch.Tensor
+
+    spectral_convergence_weight: float
+    log_magnitude_weight: float
+
+    @property
+    def total(self) -> torch.Tensor:
+        return (
+            self.spectral_convergence_weight
+            * self.spectral_convergence
+            + self.log_magnitude_weight
+            * self.log_magnitude
+        )
+
+
+@dataclass(frozen=True)
+class MultiResolutionSTFTLossOutput:
+    total: torch.Tensor
+
+    spectral_convergence: torch.Tensor
+    log_magnitude: torch.Tensor
+
+    resolutions: tuple[
+        STFTResolutionLossOutput,
+        ...,
+    ]
+
+
 @dataclass
 class VocoderGeneratorLossOutput:
     total: torch.Tensor
+
     adversarial: torch.Tensor
     feature_matching: torch.Tensor
     mrstft: torch.Tensor
     waveform: torch.Tensor
     temporal_gradient: torch.Tensor
+
+    mrstft_output: MultiResolutionSTFTLossOutput
 
 
 @dataclass
@@ -165,23 +204,62 @@ class MultiResolutionSTFTLoss(nn.Module):
         self,
         fake_audio: torch.Tensor,
         real_audio: torch.Tensor,
-    ) -> torch.Tensor:
-        total_sc = 0.0
-        total_log_mag = 0.0
+    ) -> MultiResolutionSTFTLossOutput:
+        resolution_outputs: list[STFTResolutionLossOutput] = []
 
-        for loss_fn in self.losses:
-            sc, log_mag = loss_fn(fake_audio, real_audio)
-            total_sc = total_sc + sc
-            total_log_mag = total_log_mag + log_mag
+        for (
+                fft_size,
+                hop_size,
+                win_length,
+                loss_func
+        ) in zip(
+            self.config.fft_sizes,
+            self.config.hop_sizes,
+            self.config.win_lengths,
+            self.losses
+        ):
+            spectral_convergence, log_magnitude = loss_func(fake_audio, real_audio)
 
-        n = len(self.losses)
+            resolution_outputs.append(
+                STFTResolutionLossOutput(
+                    fft_size=fft_size,
+                    hop_size=hop_size,
+                    win_length=win_length,
+                    spectral_convergence=spectral_convergence,
+                    log_magnitude=log_magnitude,
+                    spectral_convergence_weight=self.config.spectral_convergence_weight,
+                    log_magnitude_weight=self.config.log_magnitude_weight,
+                )
+            )
+
+        if not resolution_outputs:
+            raise RuntimeError(
+                "MultiResolutionSTFTLoss contains no configured resolutions."
+            )
+
+        mean_spectral_convergence = torch.stack(
+            [
+                output.spectral_convergence for output in resolution_outputs
+            ]
+        ).mean()
+
+        mean_log_magnitude = torch.stack(
+            [
+                output.log_magnitude for output in resolution_outputs
+            ]
+        ).mean()
 
         total = (
-            self.config.spectral_convergence_weight * total_sc / n
-            + self.config.log_magnitude_weight * total_log_mag / n
+            self.config.spectral_convergence_weight * mean_spectral_convergence
+            + self.config.log_magnitude_weight * mean_log_magnitude
         )
 
-        return total
+        return MultiResolutionSTFTLossOutput(
+            total=total,
+            spectral_convergence=mean_spectral_convergence,
+            log_magnitude=mean_log_magnitude,
+            resolutions=tuple(resolution_outputs),
+        )
 
 
 class VocoderLossBundle(nn.Module):
@@ -517,10 +595,12 @@ def compute_vocoder_generator_loss(
         eps=cfg.feature_matching.eps,
     )
 
-    loss_mrstft = loss_bundle.mrstft_loss(
+    mrstft_output = loss_bundle.mrstft_loss(
         fake_audio=fake_audio,
         real_audio=real_audio,
     )
+
+    loss_mrstft = mrstft_output.total
 
     loss_waveform = waveform_loss(
         fake_audio=fake_audio,
@@ -550,6 +630,7 @@ def compute_vocoder_generator_loss(
         mrstft=loss_mrstft,
         waveform=loss_waveform,
         temporal_gradient=loss_temporal_gradient,
+        mrstft_output=mrstft_output,
     )
 
 
