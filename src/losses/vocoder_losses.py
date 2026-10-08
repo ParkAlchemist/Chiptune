@@ -266,6 +266,10 @@ def waveform_loss(
 
 def generator_family_feature_matching_losses(
     discriminator_outputs: dict[str, list],
+    *,
+    normalization: str,
+    scale_floor: float,
+    eps: float,
 ) -> dict[str, torch.Tensor]:
     losses: dict[str, torch.Tensor] = {}
 
@@ -281,6 +285,9 @@ def generator_family_feature_matching_losses(
             losses[family] = feature_matching_loss(
                 real_maps,
                 fake_maps,
+                normalization=normalization,
+                scale_floor=scale_floor,
+                eps=eps,
             )
 
     return losses

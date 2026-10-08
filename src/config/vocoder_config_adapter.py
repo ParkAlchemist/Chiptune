@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
-    VocoderLossConfig, TemporalGradientLossConfig
+    VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -63,6 +63,18 @@ def build_temporal_gradient_config(
     )
 
 
+def build_feature_matching_config(
+    experiment: VocoderExperimentConfig,
+) -> FeatureMatchingLossConfig:
+    source = experiment.loss.feature_matching
+
+    return FeatureMatchingLossConfig(
+        normalization=source.normalization,
+        scale_floor=source.scale_floor,
+        eps=source.eps,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -75,7 +87,8 @@ def build_loss_config(
         lambda_waveform=source.lambda_waveform,
         lambda_temporal_gradient=source.lambda_temporal_gradient,
         mrstft=build_mrstft_config(experiment),
-        temporal_gradient=build_temporal_gradient_config(experiment)
+        temporal_gradient=build_temporal_gradient_config(experiment),
+        feature_matching=build_feature_matching_config(experiment),
     )
 
 

@@ -803,6 +803,7 @@ def _validate_loss_config(
         ),
         "loss.lambda_mrstft": loss.lambda_mrstft,
         "loss.lambda_waveform": loss.lambda_waveform,
+        "loss.lambda_temporal_gradient": loss.lambda_temporal_gradient,
     }
 
     for path, value in weights.items():
@@ -837,6 +838,56 @@ def _validate_loss_config(
             f"{feature_matching.eps} must be positive, "
             f"got {feature_matching.eps}."
         )
+
+    temporal_gradient = loss.temporal_gradient
+
+    if temporal_gradient.enabled:
+        if len(temporal_gradient.lags) == 0:
+            errors.append(
+                f"temporal_gradient.lags must contain at least one value"
+            )
+
+        if len(temporal_gradient.lags) != len(set(temporal_gradient.lags)):
+            errors.append(
+                f"all temporal_gradient.lags must be unique."
+            )
+
+        if any(value <= 0 for value in temporal_gradient.lags):
+            errors.append(
+                f"temporal_gradient.lags must be non-negative."
+            )
+
+        if temporal_gradient.normalization not in {"layer_norm", "real_magnitude"}:
+            errors.append(
+                f"Unsupported temporal_gradient normalization, "
+                f"got {temporal_gradient.normalization!r}."
+            )
+
+        if temporal_gradient.scale_floor <= 0.0:
+            errors.append(
+                f"temporal_gradient.scale_floor must be positive, "
+                f"got {temporal_gradient.scale_floor}."
+            )
+
+        if temporal_gradient.eps <= 0.0:
+            errors.append(
+                f"temporal_gradient.eps must be positive, "
+                f"got {temporal_gradient.eps}."
+            )
+
+        if temporal_gradient.edge_weighting:
+            if temporal_gradient.edge_weight <= 0.0:
+                errors.append(
+                    f"temporal_gradient.edge_weighting must be positive, "
+                    f"got {temporal_gradient.edge_weight}."
+                )
+
+            if temporal_gradient.max_edge_weight < 1.0:
+                errors.append(
+                    f"temporal_gradient.max_edge_weight must be "
+                    f"at least 1.0, got {temporal_gradient.max_edge_weight}."
+                )
+
 
 
 def _validate_optimizer_config(
