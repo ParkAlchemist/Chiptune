@@ -1,13 +1,22 @@
+import math
+
 import pytest
 import torch
 
-from src.config.vocoder_config import MRSTFTConfig
+from src.config.vocoder_config import MRSTFTConfig, VocoderDiscriminatorConfig, VocoderGeneratorModelConfig, \
+    TemporalGradientLossConfig
 from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
     compute_vocoder_discriminator_loss,
     compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss, MultiResolutionSTFTLoss,
+    generator_loss_contribution_metrics, VocoderGeneratorLossOutput, make_weighted_loss_component,
+    generator_loss_metrics,
 )
+from src.models.vocoder_discriminators import HiFiGANMultiDiscriminator
+from src.models.vocoder_hifigan import CQTUHiFiGANGenerator
+from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
+    make_test_loss_config
 
 
 def test_mrstft_loss_finite():
@@ -24,7 +33,7 @@ def test_mrstft_loss_finite():
     real = torch.randn(2, 1, 4096)
     fake = torch.randn(2, 1, 4096)
 
-    loss = bundle.mrstft_loss(fake, real)
+    loss = bundle.mrstft_loss(fake, real).total
     assert loss.ndim == 0
     assert torch.isfinite(loss)
 
@@ -55,6 +64,7 @@ def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
                 hop_sizes=(64,),
                 win_lengths=(256,),
             ),
+            temporal_gradient=TemporalGradientLossConfig()
         )
     )
 
@@ -85,10 +95,11 @@ def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
     )
     assert losses.total.ndim == 0
     assert torch.isfinite(losses.total)
-    assert torch.isfinite(losses.adversarial)
-    assert torch.isfinite(losses.feature_matching)
-    assert torch.isfinite(losses.mrstft)
-    assert torch.isfinite(losses.waveform)
+    assert torch.isfinite(losses.adversarial.raw)
+    assert torch.isfinite(losses.feature_matching.raw)
+    assert torch.isfinite(losses.mrstft.raw)
+    assert torch.isfinite(losses.waveform.raw)
+    assert torch.isfinite(losses.temporal_gradient.raw)
 
     losses.total.backward()
 
@@ -451,6 +462,186 @@ def test_structured_mrstft_matches_legacy_scalar() -> None:
         legacy_total,
         atol=1e-7,
         rtol=1e-6,
+    )
+
+
+def test_generator_total_matches_weighted_components() -> None:
+    output = make_test_generator_loss_output()
+
+    expected = (
+        output.adversarial.weighted
+        + output.feature_matching.weighted
+        + output.mrstft.weighted
+        + output.waveform.weighted
+        + output.temporal_gradient.weighted
+    )
+
+    assert torch.allclose(
+        output.total,
+        expected,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+
+def test_generator_weighted_components_use_configured_lambdas() -> None:
+
+    output = make_test_generator_loss_output(
+        adversarial_weight=0.5,
+        feature_matching_weight=1.5,
+        mrstft_weight=2.0,
+        waveform_weight=0.25,
+        temporal_gradient_weight=0.1,
+    )
+
+    assert torch.allclose(
+        output.adversarial.weighted,
+        0.5 * output.adversarial.raw,
+    )
+
+    assert torch.allclose(
+        output.feature_matching.weighted,
+        1.5 * output.feature_matching.raw,
+    )
+
+    assert torch.allclose(
+        output.mrstft.weighted,
+        2.0 * output.mrstft.raw,
+    )
+
+    assert torch.allclose(
+        output.waveform.weighted,
+        0.25 * output.waveform.raw,
+    )
+
+    assert torch.allclose(
+        output.temporal_gradient.weighted,
+        0.1 * output.temporal_gradient.raw,
+    )
+
+
+def test_generator_group_totals() -> None:
+    output = make_test_generator_loss_output()
+
+    assert torch.allclose(
+        output.learned_total,
+        (
+            output.adversarial.weighted
+            + output.feature_matching.weighted
+        ),
+    )
+
+    assert torch.allclose(
+        output.time_micro_total,
+        (
+            output.waveform.weighted
+            + output.temporal_gradient.weighted
+        ),
+    )
+
+    assert torch.allclose(
+        output.time_frequency_total,
+        output.mrstft.weighted,
+    )
+
+
+def test_loss_contribution_metrics_sum_to_one() -> None:
+    output = make_test_generator_loss_output()
+
+    metrics = (
+        generator_loss_contribution_metrics(
+            output
+        )
+    )
+
+    total = sum(metrics.values())
+
+    assert total == pytest.approx(
+        1.0,
+        abs=1e-6,
+    )
+
+
+def test_zero_loss_contributions_are_finite() -> None:
+    zero = torch.zeros(())
+
+    output = VocoderGeneratorLossOutput(
+        total=zero,
+        adversarial=(
+            make_weighted_loss_component(
+                zero,
+                1.0,
+            )
+        ),
+        feature_matching=(
+            make_weighted_loss_component(
+                zero,
+                1.0,
+            )
+        ),
+        mrstft=(
+            make_weighted_loss_component(
+                zero,
+                1.0,
+            )
+        ),
+        waveform=(
+            make_weighted_loss_component(
+                zero,
+                1.0,
+            )
+        ),
+        temporal_gradient=(
+            make_weighted_loss_component(
+                zero,
+                1.0,
+            )
+        ),
+        mrstft_output=make_zero_mrstft_output(),
+    )
+
+    metrics = (
+        generator_loss_contribution_metrics(
+            output
+        )
+    )
+
+    assert all(
+        math.isfinite(value)
+        for value in metrics.values()
+    )
+
+    assert all(
+        value == pytest.approx(0.0)
+        for value in metrics.values()
+    )
+
+
+def test_generator_loss_metrics_use_structured_output() -> None:
+    output = make_test_generator_loss_output()
+
+    metrics = generator_loss_metrics(output)
+
+    assert metrics["loss_g_total"] == pytest.approx(
+        output.total.item()
+    )
+
+    assert metrics[
+        "loss_g_adversarial"
+    ] == pytest.approx(
+        output.adversarial.raw.item()
+    )
+
+    assert metrics[
+        "loss_g_weighted/adversarial"
+    ] == pytest.approx(
+        output.adversarial.weighted.item()
+    )
+
+    assert metrics[
+        "loss_g_group/learned"
+    ] == pytest.approx(
+        output.learned_total.item()
     )
 
 

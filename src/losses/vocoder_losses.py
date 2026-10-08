@@ -13,6 +13,17 @@ from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig
 
 
 @dataclass(frozen=True)
+class WeightedLossComponent:
+    """
+    One generator loss before and after application of its configured scalar weight.
+    """
+
+    raw: torch.Tensor
+    weight: float
+    weighted: torch.Tensor
+
+
+@dataclass(frozen=True)
 class STFTResolutionLossOutput:
     fft_size: int
     hop_size: int
@@ -51,13 +62,25 @@ class MultiResolutionSTFTLossOutput:
 class VocoderGeneratorLossOutput:
     total: torch.Tensor
 
-    adversarial: torch.Tensor
-    feature_matching: torch.Tensor
-    mrstft: torch.Tensor
-    waveform: torch.Tensor
-    temporal_gradient: torch.Tensor
+    adversarial: WeightedLossComponent
+    feature_matching: WeightedLossComponent
+    mrstft: WeightedLossComponent
+    waveform: WeightedLossComponent
+    temporal_gradient: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
+
+    @property
+    def learned_total(self) -> torch.Tensor:
+        return self.adversarial.weighted + self.feature_matching.weighted
+
+    @property
+    def time_micro_total(self) -> torch.Tensor:
+        return self.waveform.weighted + self.temporal_gradient.weighted
+
+    @property
+    def time_frequency_total(self) -> torch.Tensor:
+        return self.mrstft.weighted
 
 
 @dataclass
@@ -65,6 +88,17 @@ class VocoderDiscriminatorLossOutput:
     total: torch.Tensor
     real: torch.Tensor
     fake: torch.Tensor
+
+
+def make_weighted_loss_component(
+        raw: torch.Tensor,
+        weight: float,
+) -> WeightedLossComponent:
+    return WeightedLossComponent(
+        raw=raw,
+        weight=weight,
+        weighted=raw * float(weight)
+    )
 
 
 class SingleResolutionSTFTLoss(nn.Module):
@@ -573,63 +607,86 @@ def compute_vocoder_generator_loss(
     loss_bundle: VocoderLossBundle,
 ) -> VocoderGeneratorLossOutput:
     """
-    Computes full generator loss:
-
-        total =
-            lambda_adv * adversarial
-          + lambda_feature_matching * feature_matching
-          + lambda_mrstft * multi_resolution_stft
-          + lambda_waveform * waveform
+    Computes full generator loss
     """
     cfg = loss_bundle.config
 
-    loss_adv = lsgan_generator_adversarial_loss(
-        discriminator_outputs["fake_outputs"]
-    )
+    #------------------Raw losses-------------------
 
-    loss_fm = feature_matching_loss(
+    loss_adversarial_raw = lsgan_generator_adversarial_loss(discriminator_outputs["fake_outputs"])
+
+    feature_cfg = cfg.feature_matching
+
+    loss_feature_matching_raw = feature_matching_loss(
         discriminator_outputs["real_feature_maps"],
         discriminator_outputs["fake_feature_maps"],
-        normalization=cfg.feature_matching.normalization,
-        scale_floor=cfg.feature_matching.scale_floor,
-        eps=cfg.feature_matching.eps,
+        normalization=feature_cfg.normalization,
+        scale_floor=feature_cfg.scale_floor,
+        eps=feature_cfg.eps,
     )
 
     mrstft_output = loss_bundle.mrstft_loss(
-        fake_audio=fake_audio,
-        real_audio=real_audio,
+        fake_audio,
+        real_audio,
     )
 
-    loss_mrstft = mrstft_output.total
+    loss_mrstft_raw = mrstft_output.total
 
-    loss_waveform = waveform_loss(
-        fake_audio=fake_audio,
-        real_audio=real_audio,
+    loss_waveform_raw = waveform_loss(
+        fake_audio,
+        real_audio,
     )
 
-    if cfg.temporal_gradient.enabled:
-        loss_temporal_gradient = loss_bundle.temporal_gradient_loss(
-            prediction=fake_audio,
-            target=real_audio,
-        )
+    if loss_bundle.temporal_gradient_loss is None:
+        loss_temporal_gradient_raw = fake_audio.new_zeros(())
     else:
-        loss_temporal_gradient = fake_audio.new_zeros(())
+        loss_temporal_gradient_raw = loss_bundle.temporal_gradient_loss(
+            fake_audio,
+            real_audio,
+        )
+
+    #------------------Weighted losses-------------------
+
+    adversarial = make_weighted_loss_component(
+        raw=loss_adversarial_raw,
+        weight=cfg.lambda_adversarial,
+    )
+
+    feature_matching = make_weighted_loss_component(
+        raw=loss_feature_matching_raw,
+        weight=cfg.lambda_feature_matching,
+    )
+
+    mrstft = make_weighted_loss_component(
+        raw=loss_mrstft_raw,
+        weight=cfg.lambda_mrstft,
+    )
+
+    waveform = make_weighted_loss_component(
+        raw=loss_waveform_raw,
+        weight=cfg.lambda_waveform,
+    )
+
+    temporal_gradient = make_weighted_loss_component(
+        raw=loss_temporal_gradient_raw,
+        weight=cfg.lambda_temporal_gradient,
+    )
 
     total = (
-        cfg.lambda_adversarial * loss_adv
-        + cfg.lambda_feature_matching * loss_fm
-        + cfg.lambda_mrstft * loss_mrstft
-        + cfg.lambda_waveform * loss_waveform
-        + cfg.lambda_temporal_gradient * loss_temporal_gradient
+        adversarial.weighted
+        + feature_matching.weighted
+        + mrstft.weighted
+        + waveform.weighted
+        + temporal_gradient.weighted
     )
 
     return VocoderGeneratorLossOutput(
         total=total,
-        adversarial=loss_adv,
-        feature_matching=loss_fm,
-        mrstft=loss_mrstft,
-        waveform=loss_waveform,
-        temporal_gradient=loss_temporal_gradient,
+        adversarial=adversarial,
+        feature_matching=feature_matching,
+        mrstft=mrstft,
+        waveform=waveform,
+        temporal_gradient=temporal_gradient,
         mrstft_output=mrstft_output,
     )
 
@@ -685,4 +742,157 @@ def detach_vocoder_loss_dict(losses: dict[str, torch.Tensor | float]) -> dict[st
             out[key] = float(value)
 
     return out
+
+
+def generator_loss_metrics(
+    output: VocoderGeneratorLossOutput,
+) -> dict[str, float]:
+    metrics = {
+        "loss_g_total": float(
+            output.total.detach().cpu()
+        ),
+
+        "loss_g_adversarial": float(
+            output.adversarial.raw.detach().cpu()
+        ),
+        "loss_g_feature_matching": float(
+            output.feature_matching.raw.detach().cpu()
+        ),
+        "loss_g_mrstft": float(
+            output.mrstft.raw.detach().cpu()
+        ),
+        "loss_g_waveform": float(
+            output.waveform.raw.detach().cpu()
+        ),
+        "loss_g_temporal_gradient": float(
+            output.temporal_gradient.raw.detach().cpu()
+        ),
+
+        "loss_g_weighted/adversarial": float(
+            output.adversarial.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/feature_matching": float(
+            output.feature_matching.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/mrstft": float(
+            output.mrstft.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/waveform": float(
+            output.waveform.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/temporal_gradient": float(
+            output.temporal_gradient.weighted.detach().cpu()
+        ),
+
+        "loss_g_group/learned": float(
+            output.learned_total.detach().cpu()
+        ),
+        "loss_g_group/time_micro": float(
+            output.time_micro_total.detach().cpu()
+        ),
+        "loss_g_group/time_frequency": float(
+            output.time_frequency_total.detach().cpu()
+        ),
+
+        "loss_g_mrstft_spectral_convergence": float(
+            output.mrstft_output
+            .spectral_convergence
+            .detach()
+            .cpu()
+        ),
+        "loss_g_mrstft_log_magnitude": float(
+            output.mrstft_output
+            .log_magnitude
+            .detach()
+            .cpu()
+        ),
+    }
+
+    metrics.update(
+        generator_loss_contribution_metrics(
+            output=output,
+        )
+    )
+
+    for resolution in (
+        output.mrstft_output.resolutions
+    ):
+        prefix = (
+            "loss_g_mrstft_resolution/"
+            f"fft_{resolution.fft_size}"
+            f"_hop_{resolution.hop_size}"
+            f"_win_{resolution.win_length}"
+        )
+
+        metrics[
+            f"{prefix}/spectral_convergence"
+        ] = float(
+            resolution
+            .spectral_convergence
+            .detach()
+            .cpu()
+        )
+
+        metrics[
+            f"{prefix}/log_magnitude"
+        ] = float(
+            resolution
+            .log_magnitude
+            .detach()
+            .cpu()
+        )
+
+        metrics[
+            f"{prefix}/total"
+        ] = float(
+            resolution.total
+            .detach()
+            .cpu()
+        )
+
+    return metrics
+
+
+def generator_loss_contribution_metrics(
+    output: VocoderGeneratorLossOutput,
+    *,
+    eps: float = 1e-8,
+) -> dict[str, float]:
+    weighted_components = {
+        "adversarial": (
+            output.adversarial.weighted
+        ),
+        "feature_matching": (
+            output.feature_matching.weighted
+        ),
+        "mrstft": output.mrstft.weighted,
+        "waveform": output.waveform.weighted,
+        "temporal_gradient": (
+            output.temporal_gradient.weighted
+        ),
+    }
+
+    denominator = torch.stack(
+        [
+            value.detach().abs()
+            for value in weighted_components.values()
+        ]
+    ).sum().clamp_min(eps)
+
+    metrics: dict[str, float] = {}
+
+    for name, value in weighted_components.items():
+        contribution = (
+            value.detach().abs()
+            / denominator
+        )
+
+        metrics[
+            f"loss_g_contribution/{name}"
+        ] = float(
+            contribution.cpu()
+        )
+
+    return metrics
+
 

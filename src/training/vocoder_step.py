@@ -12,7 +12,7 @@ from src.losses.vocoder_losses import (
     compute_vocoder_discriminator_loss,
     compute_vocoder_generator_loss,
     detach_vocoder_loss_dict, discriminator_family_losses, generator_family_adversarial_losses,
-    generator_family_feature_matching_losses,
+    generator_family_feature_matching_losses, generator_loss_metrics,
 )
 from src.training.vocoder.logging import (
     discriminator_branch_metrics,
@@ -161,20 +161,17 @@ def vocoder_train_micro_step(
     finally:
         set_requires_grad(discriminator, True)
 
-    losses = {
-        "loss_g_total": float(loss_g_total.detach().cpu()),
-        "loss_d_total": float(loss_d_total.detach().cpu()),
-        "loss_g_adversarial": float(generator_losses.adversarial.detach().cpu()),
-        "loss_g_feature_matching": float(generator_losses.feature_matching.detach().cpu()),
-        "loss_g_mrstft": float(generator_losses.mrstft.detach().cpu()),
-        "loss_g_mrstft_spectral_convergence": float(generator_losses.mrstft_output.spectral_convergence.detach().cpu()),
-        "loss_g_mrstft_log_magnitude": float(generator_losses.mrstft_output.log_magnitude.detach().cpu()),
-        "loss_g_waveform": float(generator_losses.waveform.detach().cpu()),
-        "loss_g_temporal_gradient": float(generator_losses.temporal_gradient.detach().cpu()),
-        "loss_d_real": float(discriminator_losses.real.detach().cpu()),
-        "loss_d_fake": float(discriminator_losses.fake.detach().cpu()),
-        **health_metrics,
-    }
+    losses = generator_loss_metrics(generator_losses)
+
+    losses.update(
+        {
+            "loss_d_total": float(loss_d_total.detach().cpu()),
+            "loss_d_real": float(discriminator_losses.real.detach().cpu()),
+            "loss_d_fake": float(discriminator_losses.fake.detach().cpu()),
+        }
+    )
+
+    losses.update(health_metrics)
 
     for family, family_loss in (
             discriminator_family.items()
@@ -246,63 +243,6 @@ def vocoder_train_micro_step(
             ),
         }
     )
-
-    cfg = loss_bundle.config
-
-    losses.update(
-        {
-            "loss_g_weighted/adversarial": float(
-                (
-                        cfg.lambda_adversarial
-                        * generator_losses.adversarial
-                ).detach().cpu()
-            ),
-            "loss_g_weighted/feature_matching": float(
-                (
-                        cfg.lambda_feature_matching
-                        * generator_losses.feature_matching
-                ).detach().cpu()
-            ),
-            "loss_g_weighted/mrstft": float(
-                (
-                        cfg.lambda_mrstft
-                        * generator_losses.mrstft
-                ).detach().cpu()
-            ),
-            "loss_g_weighted/waveform": float(
-                (
-                        cfg.lambda_waveform
-                        * generator_losses.waveform
-                ).detach().cpu()
-            ),
-            "loss_g_weighted/temporal_gradient": float(
-                (
-                        cfg.lambda_temporal_gradient
-                        * generator_losses.temporal_gradient
-                ).detach().cpu()
-            ),
-        }
-    )
-
-    for resolution in generator_losses.mrstft_output.resolutions:
-        prefix = (
-            "loss_g_mrstft_resolution/"
-            f"fft_{resolution.fft_size}"
-            f"_hop_{resolution.hop_size}"
-            f"_win_{resolution.win_length}"
-        )
-
-        losses[f"{prefix}/spectral_convergence"] = float(
-            resolution.spectral_convergence.detach().cpu()
-        )
-
-        losses[f"{prefix}/log_magnitude"] = float(
-            resolution.log_magnitude.detach().cpu()
-        )
-
-        losses[f"{prefix}/total"] = float(
-            resolution.total.detach().cpu()
-        )
 
     return VocoderMicroStepResult(losses=losses, batch_size=int(cqt.shape[0]))
 
