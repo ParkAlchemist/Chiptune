@@ -126,16 +126,33 @@ class TemporalGradientLossConfig:
 
 
 @dataclass
+class RMSEnvelopeLossConfig:
+    enabled: bool = False
+
+    window_sizes: tuple[int, ...] = (
+        64,
+        256,
+        1024,
+        4096,
+    )
+
+    hop_ratio: int = 4
+    eps: float = 1e-8
+
+
+@dataclass
 class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
-    lambda_mrstft: float = 45.0
-    lambda_waveform: float = 1.0
-    lambda_temporal_gradient: float = 1.0
+    lambda_mrstft: float = 1.25
+    lambda_waveform: float = 0.5
+    lambda_temporal_gradient: float = 0.1
+    lambda_rms_envelope: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
     temporal_gradient: TemporalGradientLossConfig = field(default_factory=TemporalGradientLossConfig)
+    rms_envelope: RMSEnvelopeLossConfig = field(default_factory=RMSEnvelopeLossConfig)
 
 
 @dataclass

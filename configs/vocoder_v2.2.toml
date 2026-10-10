@@ -146,6 +146,7 @@ lambda_feature_matching = 2.0
 lambda_mrstft = 2.5
 lambda_waveform = 0.5
 lambda_temporal_gradient = 0.5
+lambda_rms_envelope = 0.0
 
 [loss.mrstft]
 fft_sizes = [128, 256, 512, 1024, 2048]
@@ -169,6 +170,12 @@ eps = 1e-8
 edge_weighting = false
 edge_weight = 1.0
 max_edge_weight = 5.0
+
+[loss.rms_envelope]
+enabled = false
+window_sizes = [64, 256, 1024, 4096]
+hop_ratio = 4
+eps = 1e-8
 
 [optimizer.generator]
 name = "adamw"

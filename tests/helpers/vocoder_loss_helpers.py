@@ -16,7 +16,8 @@ from src.losses.vocoder_losses import (
     VocoderGeneratorLossOutput,
     WeightedLossComponent,
     make_weighted_loss_component, family_balanced_generator_adversarial_loss, family_balanced_feature_matching_loss,
-    FamilyDiscriminatorLossOutput, FamilyLossOutput,
+    FamilyDiscriminatorLossOutput, FamilyLossOutput, MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput,
+    RMSEnvelopeScaleLossOutput,
 )
 
 
@@ -147,6 +148,42 @@ def make_test_mrstft_output(
     )
 
 
+def make_test_rms_envelope_output(
+    *,
+    device: torch.device | str = "cpu",
+) -> MultiScaleRMSEnvelopeLossOutput:
+    scales = (
+        RMSEnvelopeScaleLossOutput(
+            window_size=64,
+            hop_size=16,
+            loss=scalar_tensor(
+                0.2,
+                device=device,
+            ),
+        ),
+        RMSEnvelopeScaleLossOutput(
+            window_size=256,
+            hop_size=64,
+            loss=scalar_tensor(
+                0.4,
+                device=device,
+            ),
+        ),
+    )
+
+    total = torch.stack(
+        [
+            scale.loss
+            for scale in scales
+        ]
+    ).mean()
+
+    return MultiScaleRMSEnvelopeLossOutput(
+        total=total,
+        scales=scales,
+    )
+
+
 def make_zero_mrstft_output(
     *,
     device: torch.device | str = "cpu",
@@ -209,6 +246,9 @@ def make_test_generator_loss_output(
     waveform_weight: float = 0.2,
     temporal_gradient_raw: float = 6.0,
     temporal_gradient_weight: float = 0.1,
+    rms_envelope_raw: float = 7.0,
+    rms_envelope_weight: float = 0.05,
+    rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None = None,
     adversarial_families: (
         dict[str, torch.Tensor]
         | None
@@ -253,6 +293,12 @@ def make_test_generator_loss_output(
         device=device,
     )
 
+    rms_envelope = make_test_weighted_component(
+        raw=rms_envelope_raw,
+        weight=rms_envelope_weight,
+        device=device,
+    )
+
     if adversarial_families is None:
         adversarial_families = {
             "mpd": scalar_tensor(
@@ -280,6 +326,7 @@ def make_test_generator_loss_output(
         + mrstft.weighted
         + waveform.weighted
         + temporal_gradient.weighted
+        + rms_envelope.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -293,6 +340,7 @@ def make_test_generator_loss_output(
         temporal_gradient=(
             temporal_gradient
         ),
+        rms_envelope=rms_envelope,
         adversarial_families=(
             adversarial_families
         ),
@@ -300,6 +348,7 @@ def make_test_generator_loss_output(
             feature_matching_families
         ),
         mrstft_output=mrstft_output,
+        rms_envelope_output=rms_envelope_output,
     )
 
 

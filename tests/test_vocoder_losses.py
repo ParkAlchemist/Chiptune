@@ -2,9 +2,10 @@ import math
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from src.config.vocoder_config import MRSTFTConfig, VocoderDiscriminatorConfig, VocoderGeneratorModelConfig, \
-    TemporalGradientLossConfig
+    TemporalGradientLossConfig, RMSEnvelopeLossConfig
 from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
@@ -13,7 +14,7 @@ from src.losses.vocoder_losses import (
     generator_loss_contribution_metrics, VocoderGeneratorLossOutput, make_weighted_loss_component,
     generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
-    FamilyDiscriminatorLossOutput, discriminator_loss_metrics,
+    FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
@@ -420,6 +421,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.mrstft.weighted
         + output.waveform.weighted
         + output.temporal_gradient.weighted
+        + output.rms_envelope.weighted
     )
 
     assert torch.allclose(
@@ -1021,4 +1023,202 @@ def test_family_balanced_adversarial_loss_backpropagates_to_every_family() -> No
             assert torch.isfinite(
                 prediction.grad
             ).all()
+
+
+def test_rms_envelope_loss_is_zero_for_exact_match() -> None:
+    config = RMSEnvelopeLossConfig(
+        enabled=True,
+        window_sizes=(16, 32, 64),
+        hop_ratio=4,
+        eps=1e-8,
+    )
+
+    loss_function = (
+        MultiScaleRMSEnvelopeLoss(config)
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        256,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+def test_rms_envelope_loss_detects_amplitude_mismatch() -> None:
+    config = RMSEnvelopeLossConfig(
+        enabled=True,
+        window_sizes=(16, 64),
+        hop_ratio=4,
+        eps=1e-8,
+    )
+
+    loss_function = (
+        MultiScaleRMSEnvelopeLoss(config)
+    )
+
+    target = torch.ones(
+        1,
+        1,
+        256,
+    )
+
+    prediction = 0.5 * target
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() > 0.0
+
+
+def test_rms_envelope_is_less_phase_sensitive_than_waveform_l1() -> None:
+    time = torch.arange(
+        1024,
+        dtype=torch.float32,
+    )
+
+    target = torch.sin(
+        2.0
+        * torch.pi
+        * time
+        / 32.0
+    ).reshape(1, 1, -1)
+
+    prediction = torch.roll(
+        target,
+        shifts=4,
+        dims=-1,
+    )
+
+    loss_function = MultiScaleRMSEnvelopeLoss(
+        RMSEnvelopeLossConfig(
+            enabled=True,
+            window_sizes=(64, 128),
+            hop_ratio=4,
+            eps=1e-8,
+        )
+    )
+
+    envelope_loss = loss_function(
+        prediction,
+        target,
+    ).total
+
+    waveform_loss = F.l1_loss(
+        prediction,
+        target,
+    )
+
+    assert envelope_loss < waveform_loss
+
+
+def test_rms_envelope_total_is_mean_of_scales() -> None:
+    loss_function = MultiScaleRMSEnvelopeLoss(
+        RMSEnvelopeLossConfig(
+            enabled=True,
+            window_sizes=(16, 32, 64),
+            hop_ratio=4,
+            eps=1e-8,
+        )
+    )
+
+    prediction = torch.randn(1, 1, 256)
+    target = torch.randn(1, 1, 256)
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    expected = torch.stack(
+        [
+            scale.loss
+            for scale in output.scales
+        ]
+    ).mean()
+
+    assert torch.allclose(
+        output.total,
+        expected,
+    )
+
+
+def test_rms_envelope_loss_backpropagates() -> None:
+    loss_function = MultiScaleRMSEnvelopeLoss(
+        RMSEnvelopeLossConfig(
+            enabled=True,
+            window_sizes=(16, 32, 64),
+            hop_ratio=4,
+            eps=1e-8,
+        )
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        256,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        256,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
+
+
+def test_rms_envelope_loss_handles_silence() -> None:
+    loss_function = MultiScaleRMSEnvelopeLoss(
+        RMSEnvelopeLossConfig(
+            enabled=True,
+            window_sizes=(16, 64),
+            hop_ratio=4,
+            eps=1e-8,
+        )
+    )
+
+    silence = torch.zeros(
+        2,
+        1,
+        256,
+    )
+
+    output = loss_function(
+        silence,
+        silence,
+    )
+
+    assert torch.isfinite(output.total)
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+
 

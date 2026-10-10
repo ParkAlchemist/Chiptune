@@ -804,6 +804,7 @@ def _validate_loss_config(
         "loss.lambda_mrstft": loss.lambda_mrstft,
         "loss.lambda_waveform": loss.lambda_waveform,
         "loss.lambda_temporal_gradient": loss.lambda_temporal_gradient,
+        "loss.lambda_rms_envelope": loss.lambda_rms_envelope,
     }
 
     for path, value in weights.items():
@@ -888,6 +889,36 @@ def _validate_loss_config(
                     f"at least 1.0, got {temporal_gradient.max_edge_weight}."
                 )
 
+    rms_envelope = loss.rms_envelope
+    if rms_envelope.enabled:
+
+        if not rms_envelope.window_sizes:
+            errors.append(
+                f"rms_envelope.window_sizes must contain at least "
+                f"at least one value"
+            )
+
+        for index, window_size in enumerate(rms_envelope.window_sizes):
+            if window_size <= 0.0:
+                errors.append(
+                    f"rms_envelope.window_sizes must be positive, "
+                    f"got {window_size}."
+                )
+
+        if len(set(rms_envelope.window_sizes)) != len(rms_envelope.window_sizes):
+            errors.append(
+                f"rms_envelope.window_sizes must be unique"
+            )
+
+        if rms_envelope.hop_ratio <= 0:
+            errors.append(
+                f"rms_envelope.hop_ratio must be positive"
+            )
+
+        if rms_envelope.eps <= 0:
+            errors.append(
+                f"rms_envelope.eps must be positive, "
+            )
 
 
 def _validate_optimizer_config(

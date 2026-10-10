@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
-    VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig
+    VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -75,6 +75,19 @@ def build_feature_matching_config(
     )
 
 
+def build_rms_envelope_loss_config(
+    experiment: VocoderExperimentConfig,
+) -> RMSEnvelopeLossConfig:
+    source = experiment.loss.rms_envelope
+
+    return RMSEnvelopeLossConfig(
+        enabled=source.enabled,
+        window_sizes=source.window_sizes,
+        hop_ratio=source.hop_ratio,
+        eps=source.eps,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -89,6 +102,7 @@ def build_loss_config(
         mrstft=build_mrstft_config(experiment),
         temporal_gradient=build_temporal_gradient_config(experiment),
         feature_matching=build_feature_matching_config(experiment),
+        rms_envelope=build_rms_envelope_loss_config(experiment),
     )
 
 

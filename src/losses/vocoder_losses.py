@@ -8,9 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig
-
-
+from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig, RMSEnvelopeLossConfig
 
 DISCRIMINATOR_FAMILIES: tuple[str, ...] = (
     "mpd",
@@ -66,6 +64,23 @@ class MultiResolutionSTFTLossOutput:
 
 
 @dataclass(frozen=True)
+class RMSEnvelopeScaleLossOutput:
+    window_size: int
+    hop_size: int
+    loss: torch.Tensor
+
+
+@dataclass(frozen=True)
+class MultiScaleRMSEnvelopeLossOutput:
+    total: torch.Tensor
+
+    scales: tuple[
+        RMSEnvelopeScaleLossOutput,
+        ...,
+    ]
+
+
+@dataclass(frozen=True)
 class FamilyLossOutput:
     total: torch.Tensor
     families: dict[str, torch.Tensor]
@@ -91,8 +106,10 @@ class VocoderGeneratorLossOutput:
     mrstft: WeightedLossComponent
     waveform: WeightedLossComponent
     temporal_gradient: WeightedLossComponent
+    rms_envelope: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
+    rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None
 
     adversarial_families: dict[str, torch.Tensor]
     feature_matching_families: dict[str, torch.Tensor]
@@ -108,6 +125,10 @@ class VocoderGeneratorLossOutput:
     @property
     def time_frequency_total(self) -> torch.Tensor:
         return self.mrstft.weighted
+
+    @property
+    def time_macro_total(self) -> torch.Tensor:
+        return self.rms_envelope.weighted
 
 
 @dataclass
@@ -380,6 +401,9 @@ class VocoderLossBundle(nn.Module):
             edge_weight=config.temporal_gradient.edge_weight,
             max_edge_weight=config.temporal_gradient.max_edge_weight,
         ) if config.temporal_gradient.enabled else None
+        self.rms_envelope_loss = MultiScaleRMSEnvelopeLoss(
+            config.rms_envelope
+        ) if config.rms_envelope.enabled else None
 
 
 def lsgan_discriminator_loss(
@@ -673,6 +697,162 @@ class MultiScaleTemporalGradientLoss(nn.Module):
         return torch.stack(per_scale_losses).mean()
 
 
+def rms_envelope(
+        waveform: torch.Tensor,
+        *,
+        window_size: int,
+        hop_size: int,
+        eps: float,
+) -> torch.Tensor:
+    if waveform.ndim != 3:
+        raise ValueError(
+            f"Waveform shape must be three dimensional, got {tuple(waveform.shape)}"
+        )
+
+    if window_size <= 0:
+        raise ValueError(
+            f"Window size must be positive, got {window_size}"
+        )
+
+    if hop_size <= 0:
+        raise ValueError(
+            f"Hop size must be positive, got {hop_size}"
+        )
+
+    if eps <= 0:
+        raise ValueError(
+            f"Eps must be positive, got {eps}"
+        )
+
+    if waveform.shape[-1] < window_size:
+        raise ValueError(
+            f"Waveform must be at least as long as the RMS window. "
+            f"Length={waveform.shape[-1]}, window_size={window_size}."
+        )
+
+    power = waveform.square()
+
+    mean_power = F.avg_pool1d(
+        power,
+        kernel_size=window_size,
+        stride=hop_size,
+        padding=0,
+        count_include_pad=False,
+    )
+
+    return torch.sqrt(mean_power + eps)
+
+
+class MultiScaleRMSEnvelopeLoss(nn.Module):
+    def __init__(
+        self,
+        config: RMSEnvelopeLossConfig,
+    ) -> None:
+        super().__init__()
+
+        if not config.window_sizes:
+            raise ValueError(
+                "RMS-envelope loss requires at least "
+                "one window size."
+            )
+
+        if any(
+            window_size <= 0
+            for window_size
+            in config.window_sizes
+        ):
+            raise ValueError(
+                "All RMS-envelope window sizes "
+                "must be positive."
+            )
+
+        if len(set(config.window_sizes)) != len(
+            config.window_sizes
+        ):
+            raise ValueError(
+                "RMS-envelope window sizes "
+                "must be unique."
+            )
+
+        if config.hop_ratio <= 0:
+            raise ValueError(
+                "RMS-envelope hop_ratio "
+                "must be positive."
+            )
+
+        if config.eps <= 0.0:
+            raise ValueError(
+                "RMS-envelope eps must be positive."
+            )
+
+        self.config = config
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> MultiScaleRMSEnvelopeLossOutput:
+        if prediction.shape != target.shape:
+            raise ValueError(
+                "Prediction and target waveform "
+                "shapes differ: "
+                f"{tuple(prediction.shape)} versus "
+                f"{tuple(target.shape)}."
+            )
+
+        scale_outputs: list[
+            RMSEnvelopeScaleLossOutput
+        ] = []
+
+        for window_size in (
+            self.config.window_sizes
+        ):
+            hop_size = max(
+                1,
+                window_size
+                // self.config.hop_ratio,
+            )
+
+            prediction_envelope = rms_envelope(
+                prediction,
+                window_size=window_size,
+                hop_size=hop_size,
+                eps=self.config.eps,
+            )
+
+            target_envelope = rms_envelope(
+                target,
+                window_size=window_size,
+                hop_size=hop_size,
+                eps=self.config.eps,
+            )
+
+            scale_loss = F.l1_loss(
+                prediction_envelope,
+                target_envelope,
+                reduction="mean",
+            )
+
+            scale_outputs.append(
+                RMSEnvelopeScaleLossOutput(
+                    window_size=window_size,
+                    hop_size=hop_size,
+                    loss=scale_loss,
+                )
+            )
+
+        total = torch.stack(
+            [
+                output.loss
+                for output in scale_outputs
+            ]
+        ).mean()
+
+        return MultiScaleRMSEnvelopeLossOutput(
+            total=total,
+            scales=tuple(scale_outputs),
+        )
+
 
 def generator_family_adversarial_losses(
     discriminator_outputs: dict[str, list],
@@ -855,6 +1035,15 @@ def compute_vocoder_generator_loss(
             real_audio,
         )
 
+    if loss_bundle.rms_envelope_loss is None:
+        rms_envelope_output = None
+
+        loss_rms_envelope_raw = fake_audio.new_zeros(())
+    else:
+        rms_envelope_output = loss_bundle.rms_envelope_loss(fake_audio, real_audio)
+
+        loss_rms_envelope_raw = rms_envelope_output.total
+
     #------------------Weighted losses-------------------
 
     adversarial = make_weighted_loss_component(
@@ -882,12 +1071,18 @@ def compute_vocoder_generator_loss(
         weight=cfg.lambda_temporal_gradient,
     )
 
+    rms_envelope = make_weighted_loss_component(
+        raw=loss_rms_envelope_raw,
+        weight=cfg.lambda_rms_envelope,
+    )
+
     total = (
         adversarial.weighted
         + feature_matching.weighted
         + mrstft.weighted
         + waveform.weighted
         + temporal_gradient.weighted
+        + rms_envelope.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -897,7 +1092,9 @@ def compute_vocoder_generator_loss(
         mrstft=mrstft,
         waveform=waveform,
         temporal_gradient=temporal_gradient,
+        rms_envelope=rms_envelope,
         mrstft_output=mrstft_output,
+        rms_envelope_output=rms_envelope_output,
         adversarial_families=adversarial_output.families,
         feature_matching_families=feature_matching_output.families,
     )
@@ -979,6 +1176,9 @@ def generator_loss_metrics(
         "loss_g_temporal_gradient": float(
             output.temporal_gradient.raw.detach().cpu()
         ),
+        "loss_g_rms_envelope": float(
+            output.rms_envelope.raw.detach().cpu()
+        ),
 
         "loss_g_weighted/adversarial": float(
             output.adversarial.weighted.detach().cpu()
@@ -995,6 +1195,9 @@ def generator_loss_metrics(
         "loss_g_weighted/temporal_gradient": float(
             output.temporal_gradient.weighted.detach().cpu()
         ),
+        "loss_g_weighted/rms_envelope": float(
+            output.rms_envelope.weighted.detach().cpu()
+        ),
 
         "loss_g_group/learned": float(
             output.learned_total.detach().cpu()
@@ -1004,6 +1207,9 @@ def generator_loss_metrics(
         ),
         "loss_g_group/time_frequency": float(
             output.time_frequency_total.detach().cpu()
+        ),
+        "loss_g_group/time_macro": float(
+            output.time_macro_total.detach().cpu()
         ),
 
         "loss_g_mrstft_spectral_convergence": float(
@@ -1080,6 +1286,18 @@ def generator_loss_metrics(
             .cpu()
         )
 
+    if output.rms_envelope_output is not None:
+        for scale in output.rms_envelope_output.scales:
+            prefix = (
+                "loss_g_rms_envelope_scale/"
+                f"window_{scale.window_size}"
+                f"_hop_{scale.hop_size}"
+            )
+
+            metrics[prefix] = float(
+                scale.loss.detach().cpu()
+            )
+
     return metrics
 
 
@@ -1145,6 +1363,9 @@ def generator_loss_contribution_metrics(
         "temporal_gradient": (
             output.temporal_gradient.weighted
         ),
+        "rms_envelope": (
+            output.rms_envelope.weighted
+        )
     }
 
     denominator = torch.stack(
