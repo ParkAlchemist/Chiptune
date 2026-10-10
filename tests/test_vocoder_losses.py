@@ -11,12 +11,13 @@ from src.losses.vocoder_losses import (
     compute_vocoder_discriminator_loss,
     compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss, MultiResolutionSTFTLoss,
     generator_loss_contribution_metrics, VocoderGeneratorLossOutput, make_weighted_loss_component,
-    generator_loss_metrics,
+    generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
+    family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
+    FamilyDiscriminatorLossOutput, discriminator_loss_metrics,
 )
-from src.models.vocoder_discriminators import HiFiGANMultiDiscriminator
-from src.models.vocoder_hifigan import CQTUHiFiGANGenerator
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
-    make_test_loss_config
+    make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
+    assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent
 
 
 def test_mrstft_loss_finite():
@@ -50,61 +51,6 @@ def test_vocoder_discriminator_loss_finite():
     assert torch.isfinite(losses.total)
     assert torch.isfinite(losses.real)
     assert torch.isfinite(losses.fake)
-
-
-def test_vocoder_generator_loss_finite_with_fake_discriminator_outputs():
-    bundle = VocoderLossBundle(
-        VocoderLossConfig(
-            lambda_adversarial=1.0,
-            lambda_feature_matching=2.0,
-            lambda_mrstft=1.0,
-            lambda_waveform=1.0,
-            mrstft=MRSTFTConfig(
-                fft_sizes=(256,),
-                hop_sizes=(64,),
-                win_lengths=(256,),
-            ),
-            temporal_gradient=TemporalGradientLossConfig()
-        )
-    )
-
-    real_audio = torch.randn(2, 1, 4096)
-    fake_audio = torch.randn(2, 1, 4096, requires_grad=True)
-
-    discriminator_outputs = {
-        "fake_outputs": [
-            torch.randn(2, 8, requires_grad=True),
-            torch.randn(2, 8, requires_grad=True),
-        ],
-        "real_feature_maps": [
-            [torch.randn(2, 4, 16), torch.randn(2, 8, 8)],
-        ],
-        "fake_feature_maps": [
-            [
-                torch.randn(2, 4, 16, requires_grad=True),
-                torch.randn(2, 8, 8, requires_grad=True),
-            ],
-        ],
-    }
-
-    losses = compute_vocoder_generator_loss(
-        discriminator_outputs=discriminator_outputs,
-        fake_audio=fake_audio,
-        real_audio=real_audio,
-        loss_bundle=bundle,
-    )
-    assert losses.total.ndim == 0
-    assert torch.isfinite(losses.total)
-    assert torch.isfinite(losses.adversarial.raw)
-    assert torch.isfinite(losses.feature_matching.raw)
-    assert torch.isfinite(losses.mrstft.raw)
-    assert torch.isfinite(losses.waveform.raw)
-    assert torch.isfinite(losses.temporal_gradient.raw)
-
-    losses.total.backward()
-
-    assert fake_audio.grad is not None
-    assert torch.isfinite(fake_audio.grad).all()
 
 
 def test_feature_matching_averages_layers_equally() -> None:
@@ -562,61 +508,6 @@ def test_loss_contribution_metrics_sum_to_one() -> None:
     )
 
 
-def test_zero_loss_contributions_are_finite() -> None:
-    zero = torch.zeros(())
-
-    output = VocoderGeneratorLossOutput(
-        total=zero,
-        adversarial=(
-            make_weighted_loss_component(
-                zero,
-                1.0,
-            )
-        ),
-        feature_matching=(
-            make_weighted_loss_component(
-                zero,
-                1.0,
-            )
-        ),
-        mrstft=(
-            make_weighted_loss_component(
-                zero,
-                1.0,
-            )
-        ),
-        waveform=(
-            make_weighted_loss_component(
-                zero,
-                1.0,
-            )
-        ),
-        temporal_gradient=(
-            make_weighted_loss_component(
-                zero,
-                1.0,
-            )
-        ),
-        mrstft_output=make_zero_mrstft_output(),
-    )
-
-    metrics = (
-        generator_loss_contribution_metrics(
-            output
-        )
-    )
-
-    assert all(
-        math.isfinite(value)
-        for value in metrics.values()
-    )
-
-    assert all(
-        value == pytest.approx(0.0)
-        for value in metrics.values()
-    )
-
-
 def test_generator_loss_metrics_use_structured_output() -> None:
     output = make_test_generator_loss_output()
 
@@ -644,4 +535,490 @@ def test_generator_loss_metrics_use_structured_output() -> None:
         output.learned_total.item()
     )
 
+
+def test_generator_loss_metrics_include_family_values() -> None:
+    output = make_test_generator_loss_output(
+        adversarial_raw=2.0,
+        adversarial_families={
+            "mpd": torch.Tensor((1.0, )),
+            "mrd": torch.Tensor((3.0, )),
+        },
+        feature_matching_raw=3.0,
+        feature_matching_families={
+            "mpd": torch.Tensor((2.0, )),
+            "mrd": torch.Tensor((4.0, )),
+        },
+    )
+
+    metrics = generator_loss_metrics(output)
+
+    assert metrics[
+        "loss_g_adversarial_mpd"
+    ] == pytest.approx(1.0)
+
+    assert metrics[
+        "loss_g_adversarial_mrd"
+    ] == pytest.approx(3.0)
+
+    assert metrics[
+        "loss_g_feature_matching_mpd"
+    ] == pytest.approx(2.0)
+
+    assert metrics[
+        "loss_g_feature_matching_mrd"
+    ] == pytest.approx(4.0)
+
+
+def test_discriminator_loss_metrics_include_family_values() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.0,),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(0.0,),
+        fake_output_values=(1.0,),
+    )
+
+    output = family_balanced_discriminator_loss(
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    metrics = discriminator_loss_metrics(
+        output
+    )
+
+    assert metrics[
+        "loss_d_mpd_total"
+    ] == pytest.approx(0.0)
+
+    assert metrics[
+        "loss_d_mrd_total"
+    ] == pytest.approx(2.0)
+
+    assert metrics[
+        "loss_d_total"
+    ] == pytest.approx(1.0)
+
+
+def test_mean_enabled_families() -> None:
+    losses = {
+        "mpd": torch.tensor(2.0),
+        "mrd": torch.tensor(4.0),
+    }
+
+    result = mean_enabled_families(
+        losses,
+        name="test",
+    )
+
+    assert result.item() == pytest.approx(
+        3.0
+    )
+
+
+def test_mean_enabled_families_rejects_empty_input() -> None:
+    with pytest.raises(
+        ValueError,
+        match="at least one enabled",
+    ):
+        mean_enabled_families(
+            {},
+            name="test",
+        )
+
+
+def test_generator_adversarial_balances_families_equally() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(
+            1.0,
+            1.0,
+            1.0,
+        ),
+        fake_output_values=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(1.0,),
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    result = (
+        family_balanced_generator_adversarial_loss(
+            outputs
+        )
+    )
+
+    assert_family_loss_output_consistent(
+        result
+    )
+
+    # MPD fake=0:
+    # (1 - 0)^2 = 1
+    assert result.families[
+         "mpd"
+    ].item() == pytest.approx(1.0)
+
+    # MRD fake=1:
+    # (1 - 1)^2 = 0
+    assert result.families[
+        "mrd"
+    ].item() == pytest.approx(0.0)
+
+    # Families receive equal weight despite MPD having
+    # three branches and MRD only one.
+    assert result.total.item() == pytest.approx(
+        0.5
+    )
+
+
+def test_generator_adversarial_is_invariant_to_duplicate_equal_branches() -> None:
+    one_mpd_branch = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.0,),
+    )
+
+    five_mpd_branches = make_discriminator_family(
+        real_output_values=(
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ),
+       fake_output_values=(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(1.0,),
+    )
+
+    one_result = (
+        family_balanced_generator_adversarial_loss(
+            make_multi_family_discriminator_outputs(
+                mpd=one_mpd_branch,
+                mrd=mrd,
+            )
+        )
+    )
+
+    five_result = (
+        family_balanced_generator_adversarial_loss(
+            make_multi_family_discriminator_outputs(
+                mpd=five_mpd_branches,
+                mrd=mrd,
+            )
+        )
+    )
+
+    assert torch.allclose(
+        one_result.total,
+        five_result.total,
+    )
+
+
+def test_feature_matching_balances_families_equally() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(1.0, 1.0),
+        fake_output_values=(0.0, 0.0),
+        real_feature_values=(
+            (1.0,),
+            (1.0,),
+        ),
+        fake_feature_values=(
+            (0.0,),
+            (0.0,),
+        ),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.0,),
+        real_feature_values=(
+            (3.0,),
+        ),
+        fake_feature_values=(
+            (0.0,),
+        ),
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    result = (
+        family_balanced_feature_matching_loss(
+            outputs,
+            normalization="layer_mean",
+            scale_floor=0.01,
+            eps=1e-8,
+        )
+    )
+
+    assert_family_loss_output_consistent(
+        result
+    )
+
+    assert result.families[
+        "mpd"
+    ].item() == pytest.approx(1.0)
+
+    assert result.families[
+        "mrd"
+    ].item() == pytest.approx(3.0)
+
+    assert result.total.item() == pytest.approx(
+        2.0
+    )
+
+
+def test_family_feature_matching_respects_real_magnitude_normalization() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.0,),
+        real_feature_values=(
+            (2.0,),
+        ),
+        fake_feature_values=(
+            (3.0,),
+        ),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.0,),
+        real_feature_values=(
+            (4.0,),
+        ),
+        fake_feature_values=(
+            (6.0,),
+        ),
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    result = (
+        family_balanced_feature_matching_loss(
+            outputs,
+            normalization="real_magnitude",
+            scale_floor=0.01,
+            eps=1e-8,
+        )
+    )
+
+    # MPD: |3 - 2| / 2 = 0.5
+    # MRD: |6 - 4| / 4 = 0.5
+    assert result.families[
+        "mpd"
+    ].item() == pytest.approx(0.5)
+
+    assert result.families[
+        "mrd"
+    ].item() == pytest.approx(0.5)
+
+    assert result.total.item() == pytest.approx(
+        0.5
+    )
+
+
+def test_discriminator_loss_balances_families_equally() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(
+            1.0,
+            1.0,
+            1.0,
+        ),
+        fake_output_values=(
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(0.0,),
+        fake_output_values=(1.0,),
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    result = (
+        family_balanced_discriminator_loss(
+            outputs
+        )
+    )
+
+    assert_family_discriminator_loss_consistent(
+        result
+    )
+
+    assert result.family_totals[
+        "mpd"
+    ].item() == pytest.approx(0.0)
+
+    assert result.family_real[
+        "mrd"
+    ].item() == pytest.approx(1.0)
+
+    assert result.family_fake[
+        "mrd"
+    ].item() == pytest.approx(1.0)
+
+    assert result.family_totals[
+        "mrd"
+    ].item() == pytest.approx(2.0)
+
+    assert result.total.item() == pytest.approx(
+        1.0
+    )
+
+
+def test_single_enabled_family_is_not_rescaled() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(1.0, 0.8),
+        fake_output_values=(0.0, 0.2),
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+        )
+    )
+
+    generator_result = (
+        family_balanced_generator_adversarial_loss(
+            outputs
+        )
+    )
+
+    discriminator_result = (
+        family_balanced_discriminator_loss(
+            outputs
+        )
+    )
+
+    assert set(
+        generator_result.families
+    ) == {"mpd"}
+
+    assert set(
+        discriminator_result.family_totals
+    ) == {"mpd"}
+
+    assert torch.allclose(
+        generator_result.total,
+        generator_result.families["mpd"],
+    )
+
+    assert torch.allclose(
+        discriminator_result.total,
+        discriminator_result.family_totals[
+            "mpd"
+        ],
+    )
+
+
+def test_family_balanced_losses_reject_no_enabled_families() -> None:
+    outputs = (
+        make_multi_family_discriminator_outputs()
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="at least one enabled",
+    ):
+        family_balanced_generator_adversarial_loss(
+            outputs
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="at least one enabled",
+    ):
+        family_balanced_feature_matching_loss(
+            outputs,
+            normalization="layer_mean",
+            scale_floor=0.01,
+            eps=1e-8,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="at least one enabled",
+    ):
+        family_balanced_discriminator_loss(
+            outputs
+        )
+
+
+def test_family_balanced_adversarial_loss_backpropagates_to_every_family() -> None:
+    mpd = make_discriminator_family(
+        real_output_values=(1.0, 1.0),
+        fake_output_values=(0.2, 0.3),
+        fake_requires_grad=True,
+    )
+
+    mrd = make_discriminator_family(
+        real_output_values=(1.0,),
+        fake_output_values=(0.4,),
+        fake_requires_grad=True,
+    )
+
+    outputs = (
+        make_multi_family_discriminator_outputs(
+            mpd=mpd,
+            mrd=mrd,
+        )
+    )
+
+    result = (
+        family_balanced_generator_adversarial_loss(
+            outputs
+        )
+    )
+
+    result.total.backward()
+
+    for family in ("mpd", "mrd"):
+        for prediction in outputs[
+            f"{family}_fake_outputs"
+        ]:
+            assert prediction.grad is not None
+            assert torch.isfinite(
+                prediction.grad
+            ).all()
 

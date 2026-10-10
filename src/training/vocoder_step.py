@@ -12,7 +12,8 @@ from src.losses.vocoder_losses import (
     compute_vocoder_discriminator_loss,
     compute_vocoder_generator_loss,
     detach_vocoder_loss_dict, discriminator_family_losses, generator_family_adversarial_losses,
-    generator_family_feature_matching_losses, generator_loss_metrics,
+    generator_family_feature_matching_losses, generator_loss_metrics, family_balanced_discriminator_loss,
+    discriminator_loss_metrics,
 )
 from src.training.vocoder.logging import (
     discriminator_branch_metrics,
@@ -82,7 +83,7 @@ def vocoder_train_micro_step(
             fake=fake_audio_for_d.detach(),
         )
 
-        discriminator_losses = compute_vocoder_discriminator_loss(discriminator_outputs_d)
+        discriminator_losses = family_balanced_discriminator_loss(discriminator_outputs_d)
 
         health_metrics = discriminator_health_metrics(
             discriminator_outputs_d
@@ -163,13 +164,7 @@ def vocoder_train_micro_step(
 
     losses = generator_loss_metrics(generator_losses)
 
-    losses.update(
-        {
-            "loss_d_total": float(loss_d_total.detach().cpu()),
-            "loss_d_real": float(discriminator_losses.real.detach().cpu()),
-            "loss_d_fake": float(discriminator_losses.fake.detach().cpu()),
-        }
-    )
+    losses.update(discriminator_loss_metrics(discriminator_losses))
 
     losses.update(health_metrics)
 

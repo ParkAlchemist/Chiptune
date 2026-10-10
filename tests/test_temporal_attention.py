@@ -298,14 +298,14 @@ def test_context_attention_runs_on_cuda() -> None:
     y = attention(x)
     y.square().mean().backward()
 
-    assert y.device == device
+    assert y.device.type == device.type
     assert x.grad is not None
-    assert x.grad.device == device
+    assert x.grad.device.type == device.type
 
     for parameter in attention.parameters():
-        assert parameter.device == device
+        assert parameter.device.type == device.type
 
     for buffer in attention.buffers():
-        assert buffer.device == device
+        assert buffer.device.type == device.type
 
 

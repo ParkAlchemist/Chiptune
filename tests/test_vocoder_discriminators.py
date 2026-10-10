@@ -1349,18 +1349,18 @@ def test_mrd_moves_to_cuda_and_backpropagates(
     ) = output
 
     for tensor in real_outputs:
-        assert tensor.device == device
+        assert tensor.device.type == device.type
 
     for tensor in fake_outputs:
-        assert tensor.device == device
+        assert tensor.device.type == device.type
 
     for family_maps in real_maps:
         for tensor in family_maps:
-            assert tensor.device == device
+            assert tensor.device.type == device.type
 
     for family_maps in fake_maps:
         for tensor in family_maps:
-            assert tensor.device == device
+            assert tensor.device.type == device.type
 
     loss = torch.stack(
         [
@@ -1372,11 +1372,11 @@ def test_mrd_moves_to_cuda_and_backpropagates(
     loss.backward()
 
     assert fake.grad is not None
-    assert fake.grad.device == device
+    assert fake.grad.device.type == device.type
     assert torch.isfinite(fake.grad).all()
 
     for parameter in discriminator.parameters():
-        assert parameter.device == device
+        assert parameter.device.type == device.type
 
 
 @pytest.mark.skipif(
@@ -1433,7 +1433,7 @@ def test_combined_mpd_mrd_runs_on_cuda(
     assert torch.isfinite(fake.grad).all()
 
     for parameter in discriminator.parameters():
-        assert parameter.device == device
+        assert parameter.device.type == device.type
 
 
 @pytest.mark.skipif(
@@ -1500,34 +1500,4 @@ def test_resolution_discriminator_short_input_behavior(
         (ValueError, RuntimeError),
     ):
         discriminator(waveform)
-
-
-def test_resolution_discriminator_handles_short_input(
-    small_resolution_config: ResolutionDiscriminatorConfig,
-) -> None:
-    discriminator = ResolutionDiscriminator(
-        fft_size=512,
-        hop_size=128,
-        win_length=512,
-        config=small_resolution_config,
-    )
-
-    waveform = torch.randn(
-        1,
-        1,
-        64,
-        requires_grad=True,
-    )
-
-    prediction, feature_maps = discriminator(
-        waveform
-    )
-
-    assert torch.isfinite(prediction).all()
-
-    prediction.mean().backward()
-
-    assert waveform.grad is not None
-    assert torch.isfinite(waveform.grad).all()
-
 

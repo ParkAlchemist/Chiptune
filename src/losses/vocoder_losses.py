@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
 from contextlib import nullcontext
+from collections.abc import Mapping, Sequence
 
 import torch
 import torch.nn as nn
@@ -10,6 +10,13 @@ import torch.nn.functional as F
 
 from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig
 
+
+
+DISCRIMINATOR_FAMILIES: tuple[str, ...] = (
+    "mpd",
+    "msd",
+    "mrd",
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,23 @@ class MultiResolutionSTFTLossOutput:
     ]
 
 
+@dataclass(frozen=True)
+class FamilyLossOutput:
+    total: torch.Tensor
+    families: dict[str, torch.Tensor]
+
+
+@dataclass(frozen=True)
+class FamilyDiscriminatorLossOutput:
+    total: torch.Tensor
+    real: torch.Tensor
+    fake: torch.Tensor
+
+    family_totals: dict[str, torch.Tensor]
+    family_real: dict[str, torch.Tensor]
+    family_fake: dict[str, torch.Tensor]
+
+
 @dataclass
 class VocoderGeneratorLossOutput:
     total: torch.Tensor
@@ -69,6 +93,9 @@ class VocoderGeneratorLossOutput:
     temporal_gradient: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
+
+    adversarial_families: dict[str, torch.Tensor]
+    feature_matching_families: dict[str, torch.Tensor]
 
     @property
     def learned_total(self) -> torch.Tensor:
@@ -98,6 +125,38 @@ def make_weighted_loss_component(
         raw=raw,
         weight=weight,
         weighted=raw * float(weight)
+    )
+
+
+def mean_tensor_values(
+    values: Sequence[torch.Tensor],
+    *,
+    name: str,
+) -> torch.Tensor:
+    if not values:
+        raise ValueError(
+            f"{name} requires at least one tensor."
+        )
+
+    return torch.stack(
+        tuple(values)
+    ).mean()
+
+
+def mean_enabled_families(
+    family_losses: Mapping[str, torch.Tensor],
+    *,
+    name: str,
+) -> torch.Tensor:
+    if not family_losses:
+        raise ValueError(
+            f"{name} requires at least one enabled "
+            "discriminator family."
+        )
+
+    return mean_tensor_values(
+        tuple(family_losses.values()),
+        name=name,
     )
 
 
@@ -383,26 +442,61 @@ def generator_family_feature_matching_losses(
     scale_floor: float,
     eps: float,
 ) -> dict[str, torch.Tensor]:
-    losses: dict[str, torch.Tensor] = {}
+    family_losses: dict[
+        str,
+        torch.Tensor,
+    ] = {}
 
-    for family in ("mpd", "msd", "mrd"):
+    for family in DISCRIMINATOR_FAMILIES:
         real_maps = discriminator_outputs[
             f"{family}_real_feature_maps"
         ]
+
         fake_maps = discriminator_outputs[
             f"{family}_fake_feature_maps"
         ]
 
-        if real_maps:
-            losses[family] = feature_matching_loss(
+        if not real_maps:
+            continue
+
+        family_losses[family] = (
+            feature_matching_loss(
                 real_maps,
                 fake_maps,
                 normalization=normalization,
                 scale_floor=scale_floor,
                 eps=eps,
             )
+        )
 
-    return losses
+    return family_losses
+
+
+def family_balanced_feature_matching_loss(
+    discriminator_outputs: dict[str, list],
+    *,
+    normalization: str,
+    scale_floor: float,
+    eps: float,
+) -> FamilyLossOutput:
+    family_losses = (
+        generator_family_feature_matching_losses(
+            discriminator_outputs,
+            normalization=normalization,
+            scale_floor=scale_floor,
+            eps=eps,
+        )
+    )
+
+    total = mean_enabled_families(
+        family_losses,
+        name="feature-matching loss",
+    )
+
+    return FamilyLossOutput(
+        total=total,
+        families=family_losses,
+    )
 
 
 def feature_matching_loss(
@@ -583,21 +677,120 @@ class MultiScaleTemporalGradientLoss(nn.Module):
 def generator_family_adversarial_losses(
     discriminator_outputs: dict[str, list],
 ) -> dict[str, torch.Tensor]:
-    losses: dict[str, torch.Tensor] = {}
+    family_losses: dict[
+        str,
+        torch.Tensor,
+    ] = {}
 
-    for family in ("mpd", "msd", "mrd"):
+    for family in DISCRIMINATOR_FAMILIES:
         fake_outputs = discriminator_outputs[
             f"{family}_fake_outputs"
         ]
 
-        if fake_outputs:
-            losses[family] = (
-                lsgan_generator_adversarial_loss(
-                    fake_outputs
-                )
-            )
+        if not fake_outputs:
+            continue
 
-    return losses
+        family_losses[family] = (
+            lsgan_generator_adversarial_loss(
+                fake_outputs
+            )
+        )
+
+    return family_losses
+
+
+def family_balanced_generator_adversarial_loss(
+    discriminator_outputs: dict[str, list],
+) -> FamilyLossOutput:
+    family_losses = (
+        generator_family_adversarial_losses(
+            discriminator_outputs
+        )
+    )
+
+    total = mean_enabled_families(
+        family_losses,
+        name="generator adversarial loss",
+    )
+
+    return FamilyLossOutput(
+        total=total,
+        families=family_losses,
+    )
+
+
+def family_balanced_discriminator_loss(
+    discriminator_outputs: dict[str, list],
+) -> FamilyDiscriminatorLossOutput:
+    family_totals: dict[
+        str,
+        torch.Tensor,
+    ] = {}
+
+    family_real: dict[
+        str,
+        torch.Tensor,
+    ] = {}
+
+    family_fake: dict[
+        str,
+        torch.Tensor,
+    ] = {}
+
+    for family in DISCRIMINATOR_FAMILIES:
+        real_outputs = discriminator_outputs[
+            f"{family}_real_outputs"
+        ]
+
+        fake_outputs = discriminator_outputs[
+            f"{family}_fake_outputs"
+        ]
+
+        if not real_outputs:
+            continue
+
+        family_output = (
+            lsgan_discriminator_loss(
+                real_outputs=real_outputs,
+                fake_outputs=fake_outputs,
+            )
+        )
+
+        family_totals[family] = (
+            family_output.total
+        )
+
+        family_real[family] = (
+            family_output.real
+        )
+
+        family_fake[family] = (
+            family_output.fake
+        )
+
+    total = mean_enabled_families(
+        family_totals,
+        name="discriminator total loss",
+    )
+
+    real = mean_enabled_families(
+        family_real,
+        name="discriminator real loss",
+    )
+
+    fake = mean_enabled_families(
+        family_fake,
+        name="discriminator fake loss",
+    )
+
+    return FamilyDiscriminatorLossOutput(
+        total=total,
+        real=real,
+        fake=fake,
+        family_totals=family_totals,
+        family_real=family_real,
+        family_fake=family_fake,
+    )
 
 
 def compute_vocoder_generator_loss(
@@ -613,16 +806,33 @@ def compute_vocoder_generator_loss(
 
     #------------------Raw losses-------------------
 
-    loss_adversarial_raw = lsgan_generator_adversarial_loss(discriminator_outputs["fake_outputs"])
+    adversarial_output = (
+        family_balanced_generator_adversarial_loss(
+            discriminator_outputs
+        )
+    )
 
-    feature_cfg = cfg.feature_matching
+    feature_config = cfg.feature_matching
 
-    loss_feature_matching_raw = feature_matching_loss(
-        discriminator_outputs["real_feature_maps"],
-        discriminator_outputs["fake_feature_maps"],
-        normalization=feature_cfg.normalization,
-        scale_floor=feature_cfg.scale_floor,
-        eps=feature_cfg.eps,
+    feature_matching_output = (
+        family_balanced_feature_matching_loss(
+            discriminator_outputs,
+            normalization=(
+                feature_config.normalization
+            ),
+            scale_floor=(
+                feature_config.scale_floor
+            ),
+            eps=feature_config.eps,
+        )
+    )
+
+    loss_adversarial_raw = (
+        adversarial_output.total
+    )
+
+    loss_feature_matching_raw = (
+        feature_matching_output.total
     )
 
     mrstft_output = loss_bundle.mrstft_loss(
@@ -688,6 +898,8 @@ def compute_vocoder_generator_loss(
         waveform=waveform,
         temporal_gradient=temporal_gradient,
         mrstft_output=mrstft_output,
+        adversarial_families=adversarial_output.families,
+        feature_matching_families=feature_matching_output.families,
     )
 
 
@@ -814,6 +1026,24 @@ def generator_loss_metrics(
         )
     )
 
+    for family, value in (
+            output.adversarial_families.items()
+    ):
+        metrics[
+            f"loss_g_adversarial_{family}"
+        ] = float(
+            value.detach().cpu()
+        )
+
+    for family, value in (
+            output.feature_matching_families.items()
+    ):
+        metrics[
+            f"loss_g_feature_matching_{family}"
+        ] = float(
+            value.detach().cpu()
+        )
+
     for resolution in (
         output.mrstft_output.resolutions
     ):
@@ -848,6 +1078,51 @@ def generator_loss_metrics(
             resolution.total
             .detach()
             .cpu()
+        )
+
+    return metrics
+
+
+def discriminator_loss_metrics(
+    output: FamilyDiscriminatorLossOutput,
+) -> dict[str, float]:
+    metrics = {
+        "loss_d_total": float(
+            output.total.detach().cpu()
+        ),
+        "loss_d_real": float(
+            output.real.detach().cpu()
+        ),
+        "loss_d_fake": float(
+            output.fake.detach().cpu()
+        ),
+    }
+
+    for family, value in (
+        output.family_totals.items()
+    ):
+        metrics[
+            f"loss_d_{family}_total"
+        ] = float(
+            value.detach().cpu()
+        )
+
+    for family, value in (
+        output.family_real.items()
+    ):
+        metrics[
+            f"loss_d_{family}_real"
+        ] = float(
+            value.detach().cpu()
+        )
+
+    for family, value in (
+        output.family_fake.items()
+    ):
+        metrics[
+            f"loss_d_{family}_fake"
+        ] = float(
+            value.detach().cpu()
         )
 
     return metrics

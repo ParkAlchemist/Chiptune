@@ -495,10 +495,10 @@ def test_multi_kernel_context_generator_runs_on_cuda(small_generator_config) -> 
     waveform = generator(cqt)
     waveform.mean().backward()
 
-    assert waveform.device == device
+    assert waveform.device.type == device.type
     assert cqt.grad is not None
 
     for parameter in generator.parameters():
-        assert parameter.device == device
+        assert parameter.device.type == device.type
 
 

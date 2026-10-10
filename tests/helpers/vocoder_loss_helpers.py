@@ -15,7 +15,8 @@ from src.losses.vocoder_losses import (
     STFTResolutionLossOutput,
     VocoderGeneratorLossOutput,
     WeightedLossComponent,
-    make_weighted_loss_component,
+    make_weighted_loss_component, family_balanced_generator_adversarial_loss, family_balanced_feature_matching_loss,
+    FamilyDiscriminatorLossOutput, FamilyLossOutput,
 )
 
 
@@ -208,6 +209,14 @@ def make_test_generator_loss_output(
     waveform_weight: float = 0.2,
     temporal_gradient_raw: float = 6.0,
     temporal_gradient_weight: float = 0.1,
+    adversarial_families: (
+        dict[str, torch.Tensor]
+        | None
+    ) = None,
+    feature_matching_families: (
+            dict[str, torch.Tensor]
+        | None
+    ) = None,
     mrstft_output: (
         MultiResolutionSTFTLossOutput
         | None
@@ -244,6 +253,27 @@ def make_test_generator_loss_output(
         device=device,
     )
 
+    if adversarial_families is None:
+        adversarial_families = {
+            "mpd": scalar_tensor(
+                adversarial_raw,
+                device=device,
+            )
+        }
+
+    if feature_matching_families is None:
+        feature_matching_families = {
+            "mpd": scalar_tensor(
+                feature_matching_raw,
+                device=device,
+            )
+        }
+
+    if mrstft_output is None:
+        mrstft_output = make_test_mrstft_output(
+            device=device,
+        )
+
     total = (
         adversarial.weighted
         + feature_matching.weighted
@@ -251,11 +281,6 @@ def make_test_generator_loss_output(
         + waveform.weighted
         + temporal_gradient.weighted
     )
-
-    if mrstft_output is None:
-        mrstft_output = make_test_mrstft_output(
-            device=device,
-        )
 
     return VocoderGeneratorLossOutput(
         total=total,
@@ -268,8 +293,15 @@ def make_test_generator_loss_output(
         temporal_gradient=(
             temporal_gradient
         ),
+        adversarial_families=(
+            adversarial_families
+        ),
+        feature_matching_families=(
+            feature_matching_families
+        ),
         mrstft_output=mrstft_output,
     )
+
 
 
 def make_zero_generator_loss_output(
@@ -546,6 +578,37 @@ def assert_generator_loss_output_consistent(
         rtol=1e-6,
     )
 
+    assert output.adversarial_families
+    assert output.feature_matching_families
+
+    expected_adversarial = torch.stack(
+        tuple(
+            output.adversarial_families.values()
+        )
+    ).mean()
+
+    expected_feature_matching = torch.stack(
+        tuple(
+            output
+            .feature_matching_families
+            .values()
+        )
+    ).mean()
+
+    assert torch.allclose(
+        output.adversarial.raw,
+        expected_adversarial,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+    assert torch.allclose(
+        output.feature_matching.raw,
+        expected_feature_matching,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
     assert torch.allclose(
         output.learned_total,
         (
@@ -586,5 +649,314 @@ def assert_finite_metrics(
         )
 
 
+def make_family_prediction_outputs(
+    values: tuple[float, ...],
+    *,
+    batch_size: int = 1,
+    patch_count: int = 4,
+    requires_grad: bool = False,
+    device: torch.device | str = "cpu",
+) -> list[torch.Tensor]:
+    return [
+        torch.full(
+            (batch_size, patch_count),
+            fill_value=value,
+            dtype=torch.float32,
+            device=device,
+            requires_grad=requires_grad,
+        )
+        for value in values
+    ]
+
+
+def make_family_feature_maps(
+    branch_values: tuple[
+        tuple[float, ...],
+        ...,
+    ],
+    *,
+    batch_size: int = 1,
+    channels: int = 2,
+    time: int = 4,
+    requires_grad: bool = False,
+    device: torch.device | str = "cpu",
+) -> list[list[torch.Tensor]]:
+    """
+    branch_values describes one tuple per discriminator branch.
+
+    Example:
+        (
+            (1.0, 2.0),  # Branch 0, two layers
+            (3.0,),      # Branch 1, one layer
+        )
+    """
+    return [
+        [
+            torch.full(
+                (
+                    batch_size,
+                    channels,
+                    time,
+                ),
+                fill_value=layer_value,
+                dtype=torch.float32,
+                device=device,
+                requires_grad=requires_grad,
+            )
+            for layer_value in layer_values
+        ]
+        for layer_values in branch_values
+    ]
+
+
+def make_empty_discriminator_family() -> dict[str, list]:
+    return {
+        "real_outputs": [],
+        "fake_outputs": [],
+        "real_feature_maps": [],
+        "fake_feature_maps": [],
+    }
+
+
+def make_discriminator_family(
+    *,
+    real_output_values: tuple[float, ...],
+    fake_output_values: tuple[float, ...],
+    real_feature_values: (
+        tuple[tuple[float, ...], ...]
+        | None
+    ) = None,
+    fake_feature_values: (
+            tuple[tuple[float, ...], ...]
+        | None
+    ) = None,
+    batch_size: int = 1,
+    patch_count: int = 4,
+    feature_channels: int = 2,
+    feature_time: int = 4,
+    fake_requires_grad: bool = True,
+    device: torch.device | str = "cpu",
+) -> dict[str, list]:
+    if len(real_output_values) != len(
+        fake_output_values
+    ):
+        raise ValueError(
+            "Real and fake output counts must match."
+        )
+
+    if real_feature_values is None:
+        real_feature_values = [(value, ) for value in real_output_values]
+
+    if fake_feature_values is None:
+        fake_feature_values = [(value, ) for value in fake_output_values]
+
+    if len(real_feature_values) != len(real_output_values):
+        raise ValueError(
+            "Real feature-map branch count must match "
+            "the output branch count."
+        )
+
+    if len(fake_feature_values) != len(fake_output_values):
+        raise ValueError(
+            "Fake feature-map branch count must match "
+            "the output branch count."
+        )
+
+    return {
+        "real_outputs": (
+            make_family_prediction_outputs(
+                real_output_values,
+                batch_size=batch_size,
+                patch_count=patch_count,
+                requires_grad=False,
+                device=device,
+            )
+        ),
+        "fake_outputs": (
+            make_family_prediction_outputs(
+                fake_output_values,
+                batch_size=batch_size,
+                patch_count=patch_count,
+                requires_grad=fake_requires_grad,
+                device=device,
+            )
+        ),
+        "real_feature_maps": (
+            make_family_feature_maps(
+                real_feature_values,
+                batch_size=batch_size,
+                channels=feature_channels,
+                time=feature_time,
+                requires_grad=False,
+                device=device,
+            )
+        ),
+        "fake_feature_maps": (
+            make_family_feature_maps(
+                fake_feature_values,
+                batch_size=batch_size,
+                channels=feature_channels,
+                time=feature_time,
+                requires_grad=fake_requires_grad,
+                device=device,
+            )
+        ),
+    }
+
+
+def make_multi_family_discriminator_outputs(
+    *,
+    mpd: dict[str, list] | None = None,
+    msd: dict[str, list] | None = None,
+    mrd: dict[str, list] | None = None,
+) -> dict[str, list]:
+    if mpd is None:
+        mpd = make_empty_discriminator_family()
+
+    if msd is None:
+        msd = make_empty_discriminator_family()
+
+    if mrd is None:
+        mrd = make_empty_discriminator_family()
+
+    result: dict[str, list] = {}
+
+    for family_name, family in (
+        ("mpd", mpd),
+        ("msd", msd),
+        ("mrd", mrd),
+    ):
+        result[
+            f"{family_name}_real_outputs"
+        ] = family["real_outputs"]
+
+        result[
+            f"{family_name}_fake_outputs"
+        ] = family["fake_outputs"]
+        result[
+            f"{family_name}_real_feature_maps"
+        ] = family["real_feature_maps"]
+
+        result[
+            f"{family_name}_fake_feature_maps"
+        ] = family["fake_feature_maps"]
+
+    result["real_outputs"] = (
+        mpd["real_outputs"]
+        + msd["real_outputs"]
+        + mrd["real_outputs"]
+    )
+
+    result["fake_outputs"] = (
+        mpd["fake_outputs"]
+        + msd["fake_outputs"]
+        + mrd["fake_outputs"]
+    )
+
+    result["real_feature_maps"] = (
+        mpd["real_feature_maps"]
+        + msd["real_feature_maps"]
+        + mrd["real_feature_maps"]
+    )
+
+    result["fake_feature_maps"] = (
+        mpd["fake_feature_maps"]
+        + msd["fake_feature_maps"]
+        + mrd["fake_feature_maps"]
+    )
+
+    return result
+
+
+def assert_family_loss_output_consistent(
+     output: FamilyLossOutput,
+) -> None:
+
+    assert_scalar_tensor(output.total)
+
+    assert output.families
+
+    for family_name, value in (output.families.items()):
+        assert family_name in {
+            "mpd",
+            "msd",
+            "mrd",
+        }
+
+        assert_scalar_tensor(value)
+
+    expected_total = torch.stack(tuple(output.families.values())).mean()
+
+    assert torch.allclose(output.total, expected_total, atol=1e-7, rtol = 1e-6)
+
+
+def assert_family_discriminator_loss_consistent(
+    output: FamilyDiscriminatorLossOutput,
+) -> None:
+    assert_scalar_tensor(output.total)
+    assert_scalar_tensor(output.real)
+    assert_scalar_tensor(output.fake)
+
+    assert output.family_totals
+    assert output.family_real
+    assert output.family_fake
+
+    assert set(output.family_totals) == set(output.family_real)
+
+    assert set(output.family_totals) == set(output.family_fake)
+
+    for family in output.family_totals:
+        assert_scalar_tensor(
+            output.family_totals[family]
+        )
+        assert_scalar_tensor(
+            output.family_real[family]
+        )
+        assert_scalar_tensor(
+            output.family_fake[family]
+        )
+
+        assert torch.allclose(
+            output.family_totals[family],
+            (
+                output.family_real[family]
+                + output.family_fake[family]
+            ),
+            atol=1e-7,
+            rtol=1e-6,
+        )
+    expected_total = torch.stack(tuple(output.family_totals.values())).mean()
+
+    expected_real = torch.stack(tuple(output.family_real.values())).mean()
+
+    expected_fake = torch.stack(tuple(output.family_fake.values())).mean()
+
+    assert torch.allclose(
+        output.total,
+        expected_total,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+    assert torch.allclose(
+        output.real,
+        expected_real,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+    assert torch.allclose(
+        output.fake,
+        expected_fake,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+    assert torch.allclose(
+        output.total,
+        output.real + output.fake,
+        atol=1e-7,
+        rtol=1e-6,
+    )
 
 
