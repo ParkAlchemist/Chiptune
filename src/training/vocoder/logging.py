@@ -175,6 +175,34 @@ def discriminator_branch_metrics(
 ) -> dict[str, float]:
     metrics: dict[str, float] = {}
 
+    mpd_real_outputs = outputs["mpd_real_outputs"]
+    mpd_fake_outputs = outputs["mpd_fake_outputs"]
+
+    if len(mpd_periods) != len(mpd_real_outputs):
+        raise RuntimeError(
+            "MPD branch metadata does not match realized " 
+            "discriminator outputs: " 
+            f"periods={len(mpd_periods)}, " 
+            f"real_outputs={len(mpd_real_outputs)}."
+        )
+
+    if len(mpd_real_outputs) != len(mpd_fake_outputs):
+        raise RuntimeError("MPD real and fake branch counts differ.")
+
+    mrd_real_outputs = outputs["mrd_real_outputs"]
+    mrd_fake_outputs = outputs["mrd_fake_outputs"]
+
+    if len(mrd_resolutions) != len(mrd_real_outputs):
+        raise RuntimeError(
+            "MRD branch metadata does not match realized " 
+            "discriminator outputs: " 
+            f"resolutions={len(mrd_resolutions)}, " 
+            f"real_outputs={len(mrd_real_outputs)}."
+        )
+
+    if len(mrd_real_outputs) != len(mrd_fake_outputs):
+        raise RuntimeError("MRD real and fake branch counts differ.")
+
     branch_groups = (
         (
             "mpd",

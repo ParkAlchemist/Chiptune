@@ -19,7 +19,7 @@ from src.training.vocoder.context import (
 )
 from src.training.vocoder_step import (
     finish_vocoder_optimizer_step,
-    vocoder_train_micro_step,
+    vocoder_train_micro_step, zero_vocoder_gradients,
 )
 from src.training.vocoder.schedulers import (
     step_vocoder_schedulers, get_vocoder_learning_rates,
@@ -80,8 +80,7 @@ def perform_optimizer_update(
 
     optimizers = components.optimizers
 
-    optimizers.generator.zero_grad(set_to_none=True)
-    optimizers.discriminator.zero_grad(set_to_none=True)
+    zero_vocoder_gradients(optimizers)
 
     state.accumulation_in_progress = True
 
