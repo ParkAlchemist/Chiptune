@@ -159,7 +159,8 @@ def build_training_components(
     )
 
     loss_bundle = VocoderLossBundle(
-        build_loss_config(config)
+        config=build_loss_config(config),
+        sample_rate=config.data.sample_rate,
     ).to(device)
 
     scaler_enabled = (

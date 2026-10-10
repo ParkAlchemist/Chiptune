@@ -805,6 +805,7 @@ def _validate_loss_config(
         "loss.lambda_waveform": loss.lambda_waveform,
         "loss.lambda_temporal_gradient": loss.lambda_temporal_gradient,
         "loss.lambda_rms_envelope": loss.lambda_rms_envelope,
+        "loss.lambda_band_power": loss.lambda_band_power,
     }
 
     for path, value in weights.items():
@@ -918,6 +919,91 @@ def _validate_loss_config(
         if rms_envelope.eps <= 0:
             errors.append(
                 f"rms_envelope.eps must be positive, "
+            )
+
+    band_power = loss.band_power
+    if band_power.enabled:
+        if not len(band_power.fft_sizes) == len(band_power.hop_sizes) == len(band_power.win_lengths):
+            errors.append(
+                f"band_power.fft_sizes and band_power.hop_sizes and "
+                f"band_power.win_lengths must have the same length."
+            )
+
+        if not band_power.fft_sizes:
+            errors.append(
+                f"band_power.fft_sizes must contain at least "
+                f"one value"
+            )
+
+        for index, fft_size, hop_size, win_length in enumerate(zip(band_power.fft_sizes, band_power.hop_sizes, band_power.win_lengths)):
+            if fft_size <= 0:
+                errors.append(
+                    f"band_power.fft_sizes must be positive, "
+                    f"got {fft_size}."
+                )
+            if hop_size <= 0:
+                errors.append(
+                    f"band_power.hop_sizes must be positive, "
+                    f"got {hop_size}."
+                )
+            if win_length <= 0:
+                errors.append(
+                    f"band_power.win_lengths must be positive, "
+                    f"got {win_length}."
+                )
+
+            if win_length > fft_size:
+                errors.append(
+                    f"band_power.win_lengths must not exceed "
+                    "band_power.fft_size."
+                )
+
+        if band_power.number_of_bands <= 1:
+            errors.append(
+                f"band_power.number_of_bands must be greater than one"
+            )
+
+        if band_power.fmin <= 0.0:
+            errors.append(
+                f"band_power.fmin must be positive, "
+                f"got {band_power.fmin}."
+            )
+
+        effective_fmax = band_power.fmax if band_power.fmax is not None else config.data.sample_rate / 2.0
+
+        if effective_fmax <= band_power.fmin:
+            errors.append(
+                f"band_power.fmin must be greater than "
+                "band_power.fmax."
+            )
+
+        if effective_fmax > config.data.sample_rate / 2.0:
+            errors.append(
+                f"band_power.fmax must be less than "
+                "Nyquist frequency."
+            )
+
+        if band_power.absolute_weight < 0.0:
+            errors.append(
+                f"band_power.absolute_weight must be positive, "
+                f"got {band_power.absolute_weight}."
+            )
+
+        if band_power.shape_weight < 0.0:
+            errors.append(
+                f"band_power.shape_weight must be positive, "
+                f"got {band_power.shape_weight}."
+            )
+
+        if band_power.absolute_weight == 0.0 and band_power.shape_weight == 0.0:
+            errors.append(
+                f"band_power requires at least one positive component weight"
+            )
+
+        if band_power.eps <= 0.0:
+            errors.append(
+                f"band_power.eps must be positive, "
+                f"got {band_power.eps}."
             )
 
 

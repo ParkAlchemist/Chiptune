@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig, RMSEnvelopeLossConfig
+from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig
 
 DISCRIMINATOR_FAMILIES: tuple[str, ...] = (
     "mpd",
@@ -81,6 +81,41 @@ class MultiScaleRMSEnvelopeLossOutput:
 
 
 @dataclass(frozen=True)
+class BandPowerResolutionLossOutput:
+    fft_size: int
+    hop_size: int
+    win_length: int
+
+    absolute: torch.Tensor
+    shape: torch.Tensor
+
+    absolute_weight: float
+    shape_weight: float
+
+    @property
+    def total(self) -> torch.Tensor:
+        return (
+            self.absolute_weight
+            * self.absolute
+            + self.shape_weight
+            * self.shape
+        )
+
+
+@dataclass(frozen=True)
+class MultiResolutionBandPowerLossOutput:
+    total: torch.Tensor
+
+    absolute: torch.Tensor
+    shape: torch.Tensor
+
+    resolutions: tuple[
+        BandPowerResolutionLossOutput,
+        ...,
+    ]
+
+
+@dataclass(frozen=True)
 class FamilyLossOutput:
     total: torch.Tensor
     families: dict[str, torch.Tensor]
@@ -107,9 +142,11 @@ class VocoderGeneratorLossOutput:
     waveform: WeightedLossComponent
     temporal_gradient: WeightedLossComponent
     rms_envelope: WeightedLossComponent
+    band_power: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
     rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None
+    band_power_output: MultiResolutionBandPowerLossOutput | None
 
     adversarial_families: dict[str, torch.Tensor]
     feature_matching_families: dict[str, torch.Tensor]
@@ -129,6 +166,10 @@ class VocoderGeneratorLossOutput:
     @property
     def time_macro_total(self) -> torch.Tensor:
         return self.rms_envelope.weighted
+
+    @property
+    def spectral_macro_total(self) -> torch.Tensor:
+        return self.band_power.weighted
 
 
 @dataclass
@@ -387,6 +428,8 @@ class VocoderLossBundle(nn.Module):
     def __init__(
         self,
         config: VocoderLossConfig = VocoderLossConfig(),
+        *,
+        sample_rate: int,
     ) -> None:
         super().__init__()
 
@@ -404,6 +447,10 @@ class VocoderLossBundle(nn.Module):
         self.rms_envelope_loss = MultiScaleRMSEnvelopeLoss(
             config.rms_envelope
         ) if config.rms_envelope.enabled else None
+        self.band_power_loss = MultiResolutionBandPowerLoss(
+            sample_rate=sample_rate,
+            config=config.band_power,
+        )
 
 
 def lsgan_discriminator_loss(
@@ -854,6 +901,418 @@ class MultiScaleRMSEnvelopeLoss(nn.Module):
         )
 
 
+def build_log_frequency_filterbank(
+        *,
+        sample_rate: int,
+        fft_size: int,
+        number_of_bands: int,
+        fmin: float,
+        fmax: float,
+) -> torch.Tensor:
+    if sample_rate <= 0:
+        raise ValueError(
+            f"sample_rate must be positive, got {sample_rate}"
+        )
+
+    if fft_size <= 0:
+        raise ValueError(
+            f"fft_size must be positive, got {fft_size}"
+        )
+
+    if number_of_bands <= 1:
+        raise ValueError(
+            f"number_of_bands must be at least 1, got {number_of_bands}"
+        )
+
+    nyquist = sample_rate / 2.0
+
+    if not 0.0 < fmin < fmax <= nyquist:
+        raise ValueError(
+            "Expected 0 < fmin < fmax <= nyquist, got "
+            f"fmin={fmin}, fmax={fmax}, nyquist={nyquist}"
+        )
+
+    frequencies = torch.linspace(
+        0.0,
+        nyquist,
+        fft_size // 2 + 1,
+        dtype=torch.float32,
+    )
+
+    edges = torch.logspace(
+        torch.log10(
+            torch.tensor(
+                fmin,
+                dtype=torch.float32,
+            )
+        ),
+        torch.log10(
+            torch.tensor(
+                fmax,
+                dtype=torch.float32,
+            )
+        ),
+        number_of_bands + 2,
+        dtype=torch.float32,
+    )
+
+    filters: list[torch.Tensor] = []
+
+    for band_index in range(number_of_bands):
+        left = edges[band_index]
+        center = edges[band_index + 1]
+        right = edges[band_index + 2]
+
+        rising = (frequencies - left) / (center - left).clamp_min(1e-12)
+        falling = (right - frequencies) / (right - center).clamp_min(1e-12)
+        triangle = torch.minimum(rising, falling).clamp(min=0.0, max=1.0)
+
+        filters.append(triangle)
+
+    filterbank = torch.stack(filters, dim=0)
+
+    coverage = filterbank.sum(dim=0, keepdim=True)
+    covered = coverage > 0.0
+
+    filterbank = torch.where(
+        covered,
+        filterbank / coverage.clamp_min(1e-12),
+        filterbank,
+    )
+
+    return filterbank
+
+
+def project_power_to_bands(
+        power_spectrogram: torch.Tensor,
+        filterbank: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Power spectrogram:
+        [B, C, F, T]
+
+    filterbank:
+        [bands, F]
+
+    output:
+        [B, C, bands, T]
+    """
+    if power_spectrogram.ndim != 4:
+        raise ValueError(
+            f"Expected power spectrogram [B, C, F, T], got "
+            f"{tuple(power_spectrogram.shape)}"
+        )
+
+    if filterbank.ndim != 2:
+        raise ValueError(
+            f"Expected filterbank [bands, F], got "
+            f"{tuple(filterbank.shape)}"
+        )
+
+    if power_spectrogram.shape[-2] != filterbank.shape[-1]:
+        raise ValueError(
+            f"Spectrogram and filterbank frequency dimensions differ: "
+            f"{power_spectrogram.shape[-2]} versus {filterbank.shape[-1]}."
+        )
+
+    filterbank = filterbank.to(
+        device=power_spectrogram.device,
+        dtype=power_spectrogram.dtype,
+    )
+
+    return torch.einsum(
+        "bcft,kf->bckt",
+        power_spectrogram,
+        filterbank,
+    )
+
+
+class SingleResolutionBandPowerLoss(
+    nn.Module
+):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        fft_size: int,
+        hop_size: int,
+        win_length: int,
+        number_of_bands: int,
+        fmin: float,
+        fmax: float,
+        absolute_weight: float,
+        shape_weight: float,
+        eps: float,
+    ) -> None:
+        super().__init__()
+
+        if win_length > fft_size:
+            raise ValueError(
+                "win_length must not exceed fft_size."
+            )
+
+        self.fft_size = fft_size
+        self.hop_size = hop_size
+        self.win_length = win_length
+        self.number_of_bands = (
+            number_of_bands
+        )
+        self.absolute_weight = (
+            absolute_weight
+        )
+        self.shape_weight = shape_weight
+        self.eps = eps
+
+        self.register_buffer(
+            "window",
+            torch.hann_window(
+                win_length,
+                dtype=torch.float32,
+            ),
+            persistent=False,
+        )
+
+        self.register_buffer(
+            "filterbank",
+            build_log_frequency_filterbank(
+                sample_rate=sample_rate,
+                fft_size=fft_size,
+                number_of_bands=(
+                    number_of_bands
+                ),
+                fmin=fmin,
+                fmax=fmax,
+            ),
+            persistent=False,
+        )
+
+    def _band_power(
+        self,
+        waveform: torch.Tensor,
+    ) -> torch.Tensor:
+        if waveform.ndim != 3:
+            raise ValueError(
+                "Expected waveform [B,C,T], "
+                f"got {tuple(waveform.shape)}."
+            )
+
+        batch, channels, time = (
+            waveform.shape
+        )
+
+        flattened = waveform.reshape(
+            batch * channels,
+            time,
+        )
+
+        window = self.window.to(
+            device=waveform.device,
+            dtype=waveform.dtype,
+        )
+
+        spectrum = torch.stft(
+            flattened,
+            n_fft=self.fft_size,
+            hop_length=self.hop_size,
+            win_length=self.win_length,
+            window=window,
+            center=True,
+            pad_mode="reflect",
+            normalized=False,
+            onesided=True,
+            return_complex=True,
+        )
+
+        power = spectrum.abs().square()
+
+        power = power.reshape(
+            batch,
+            channels,
+            power.shape[-2],
+            power.shape[-1],
+        )
+
+        return project_power_to_bands(
+            power,
+            self.filterbank,
+        )
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> BandPowerResolutionLossOutput:
+        if prediction.shape != target.shape:
+            raise ValueError(
+                "Prediction and target waveform "
+                "shapes differ: "
+                f"{tuple(prediction.shape)} versus "
+                f"{tuple(target.shape)}."
+            )
+
+        prediction_power = self._band_power(
+            prediction
+        )
+
+        target_power = self._band_power(
+            target
+        )
+
+        prediction_log_power = torch.log(
+            prediction_power + self.eps
+        )
+
+        target_log_power = torch.log(
+            target_power + self.eps
+        )
+
+        absolute_loss = F.l1_loss(
+            prediction_log_power,
+            target_log_power,
+            reduction="mean",
+        )
+
+        prediction_distribution = (
+            prediction_power
+            / prediction_power.sum(
+                dim=-2,
+                keepdim=True,
+            ).clamp_min(self.eps)
+        )
+
+        target_distribution = (
+            target_power
+            / target_power.sum(
+                dim=-2,
+                keepdim=True,
+            ).clamp_min(self.eps)
+        )
+
+        shape_loss = F.l1_loss(
+            torch.log(
+                prediction_distribution
+                + self.eps
+            ),
+            torch.log(
+                target_distribution
+                + self.eps
+            ),
+            reduction="mean",
+        )
+
+        return BandPowerResolutionLossOutput(
+            fft_size=self.fft_size,
+            hop_size=self.hop_size,
+            win_length=self.win_length,
+            absolute=absolute_loss,
+            shape=shape_loss,
+            absolute_weight=(
+                self.absolute_weight
+            ),
+            shape_weight=self.shape_weight,
+        )
+
+
+class MultiResolutionBandPowerLoss(
+    nn.Module
+):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        config: BandPowerLossConfig,
+    ) -> None:
+        super().__init__()
+
+        effective_fmax = (
+            config.fmax
+            if config.fmax is not None
+            else sample_rate / 2.0
+        )
+
+        self.config = config
+        self.sample_rate = sample_rate
+
+        self.losses = nn.ModuleList(
+            [
+                SingleResolutionBandPowerLoss(
+                    sample_rate=sample_rate,
+                    fft_size=fft_size,
+                    hop_size=hop_size,
+                    win_length=win_length,
+                    number_of_bands=(
+                        config.number_of_bands
+                    ),
+                    fmin=config.fmin,
+                    fmax=effective_fmax,
+                    absolute_weight=(
+                        config.absolute_weight
+                    ),
+                    shape_weight=(
+                        config.shape_weight
+                    ),
+                    eps=config.eps,
+                )
+                for (
+                    fft_size,
+                    hop_size,
+                    win_length,
+                ) in zip(
+                    config.fft_sizes,
+                    config.hop_sizes,
+                    config.win_lengths,
+                )
+            ]
+        )
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> MultiResolutionBandPowerLossOutput:
+        resolution_outputs = tuple(
+            loss_function(
+                prediction,
+                target,
+            )
+            for loss_function in self.losses
+        )
+
+        if not resolution_outputs:
+            raise RuntimeError(
+                "Band-power loss contains no "
+                "configured resolutions."
+            )
+
+        absolute = torch.stack(
+            [
+                output.absolute
+                for output in resolution_outputs
+            ]
+        ).mean()
+
+        shape = torch.stack(
+            [
+                output.shape
+                for output in resolution_outputs
+            ]
+        ).mean()
+
+        total = (
+            self.config.absolute_weight
+            * absolute
+            + self.config.shape_weight
+            * shape
+        )
+
+        return MultiResolutionBandPowerLossOutput(
+            total=total,
+            absolute=absolute,
+            shape=shape,
+            resolutions=resolution_outputs,
+        )
+
+
 def generator_family_adversarial_losses(
     discriminator_outputs: dict[str, list],
 ) -> dict[str, torch.Tensor]:
@@ -1044,6 +1503,15 @@ def compute_vocoder_generator_loss(
 
         loss_rms_envelope_raw = rms_envelope_output.total
 
+    if loss_bundle.band_power_loss is None:
+        band_power_output = None
+
+        loss_band_power_raw = fake_audio.new_zeros(())
+    else:
+        band_power_output = loss_bundle.band_power_loss(fake_audio, real_audio)
+
+        loss_band_power_raw = band_power_output.total
+
     #------------------Weighted losses-------------------
 
     adversarial = make_weighted_loss_component(
@@ -1076,6 +1544,11 @@ def compute_vocoder_generator_loss(
         weight=cfg.lambda_rms_envelope,
     )
 
+    band_power = make_weighted_loss_component(
+        raw=loss_band_power_raw,
+        weight=cfg.lambda_band_power,
+    )
+
     total = (
         adversarial.weighted
         + feature_matching.weighted
@@ -1083,6 +1556,7 @@ def compute_vocoder_generator_loss(
         + waveform.weighted
         + temporal_gradient.weighted
         + rms_envelope.weighted
+        + band_power.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -1093,8 +1567,10 @@ def compute_vocoder_generator_loss(
         waveform=waveform,
         temporal_gradient=temporal_gradient,
         rms_envelope=rms_envelope,
+        band_power=band_power,
         mrstft_output=mrstft_output,
         rms_envelope_output=rms_envelope_output,
+        band_power_output=band_power_output,
         adversarial_families=adversarial_output.families,
         feature_matching_families=feature_matching_output.families,
     )
@@ -1179,6 +1655,9 @@ def generator_loss_metrics(
         "loss_g_rms_envelope": float(
             output.rms_envelope.raw.detach().cpu()
         ),
+        "loss_g_band_power": float(
+            output.band_power.raw.detach().cpu()
+        ),
 
         "loss_g_weighted/adversarial": float(
             output.adversarial.weighted.detach().cpu()
@@ -1198,6 +1677,9 @@ def generator_loss_metrics(
         "loss_g_weighted/rms_envelope": float(
             output.rms_envelope.weighted.detach().cpu()
         ),
+        "loss_g_weighted/band_power": float(
+            output.band_power.weighted.detach().cpu()
+        ),
 
         "loss_g_group/learned": float(
             output.learned_total.detach().cpu()
@@ -1210,6 +1692,9 @@ def generator_loss_metrics(
         ),
         "loss_g_group/time_macro": float(
             output.time_macro_total.detach().cpu()
+        ),
+        "loss_g_group/spectral_macro": float(
+            output.spectral_macro_total.detach().cpu()
         ),
 
         "loss_g_mrstft_spectral_convergence": float(
@@ -1298,6 +1783,34 @@ def generator_loss_metrics(
                 scale.loss.detach().cpu()
             )
 
+    if output.band_power_output is not None:
+        metrics["loss_g_band_power_absolute"] = float(
+            output.band_power_output.absolute.detach().cpu()
+        )
+        metrics["loss_g_band_power_shape"] = float(
+            output.band_power_output.shape.detach().cpu()
+        )
+
+        for resolution in output.band_power_output.resolutions:
+            prefix = (
+                "loss_g_band_power_resolution/"
+                f"fft_{resolution.fft_size}"
+                f"_hop_{resolution.hop_size}"
+                f"_win_{resolution.win_length}"
+            )
+
+            metrics[f"{prefix}/absolute"] = float(
+                resolution.absolute.detach().cpu()
+            )
+
+            metrics[f"{prefix}/shape"] = float(
+                resolution.shape.detach().cpu()
+            )
+
+            metrics[f"{prefix}/total"] = float(
+                resolution.total.detach().cpu()
+            )
+
     return metrics
 
 
@@ -1365,6 +1878,9 @@ def generator_loss_contribution_metrics(
         ),
         "rms_envelope": (
             output.rms_envelope.weighted
+        ),
+        "band_power": (
+            output.band_power.weighted
         )
     }
 

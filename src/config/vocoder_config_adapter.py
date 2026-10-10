@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
-    VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig
+    VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -88,6 +88,25 @@ def build_rms_envelope_loss_config(
     )
 
 
+def build_band_power_loss_config(
+        experiment: VocoderExperimentConfig,
+) -> BandPowerLossConfig:
+    source = experiment.loss.band_power
+
+    return BandPowerLossConfig(
+        enabled=source.enabled,
+        fft_sizes=source.fft_sizes,
+        hop_sizes=source.hop_sizes,
+        win_lengths=source.win_lengths,
+        number_of_bands=source.number_of_bands,
+        fmin=source.fmin,
+        fmax=source.fmax,
+        absolute_weight=source.absolute_weight,
+        shape_weight=source.shape_weight,
+        eps=source.eps,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -99,10 +118,13 @@ def build_loss_config(
         lambda_mrstft=source.lambda_mrstft,
         lambda_waveform=source.lambda_waveform,
         lambda_temporal_gradient=source.lambda_temporal_gradient,
+        lambda_rms_envelope=source.lambda_rms_envelope,
+        lambda_band_power=source.lambda_band_power,
         mrstft=build_mrstft_config(experiment),
         temporal_gradient=build_temporal_gradient_config(experiment),
         feature_matching=build_feature_matching_config(experiment),
         rms_envelope=build_rms_envelope_loss_config(experiment),
+        band_power=build_band_power_loss_config(experiment),
     )
 
 

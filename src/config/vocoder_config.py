@@ -141,6 +141,36 @@ class RMSEnvelopeLossConfig:
 
 
 @dataclass
+class BandPowerLossConfig:
+    enabled: bool = False
+
+    fft_sizes: tuple[int, ...] = (
+        1024,
+        4096,
+    )
+
+    hop_sizes: tuple[int, ...] = (
+        256,
+        1024,
+    )
+
+    win_lengths: tuple[int, ...] = (
+        1024,
+        4096,
+    )
+
+    number_of_bands: int = 24
+
+    fmin: float = 27.5
+    fmax: float | None = None
+
+    absolute_weight: float = 1.0
+    shape_weight: float = 1.0
+
+    eps: float = 1e-8
+
+
+@dataclass
 class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
@@ -148,11 +178,13 @@ class VocoderLossConfig:
     lambda_waveform: float = 0.5
     lambda_temporal_gradient: float = 0.1
     lambda_rms_envelope: float = 0.0
+    lambda_band_power: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
     temporal_gradient: TemporalGradientLossConfig = field(default_factory=TemporalGradientLossConfig)
     rms_envelope: RMSEnvelopeLossConfig = field(default_factory=RMSEnvelopeLossConfig)
+    band_power: BandPowerLossConfig = field(default_factory=BandPowerLossConfig)
 
 
 @dataclass

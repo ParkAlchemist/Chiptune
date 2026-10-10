@@ -147,6 +147,7 @@ lambda_mrstft = 2.5
 lambda_waveform = 0.5
 lambda_temporal_gradient = 0.5
 lambda_rms_envelope = 0.0
+lambda_band_power = 0.0
 
 [loss.mrstft]
 fft_sizes = [128, 256, 512, 1024, 2048]
@@ -175,6 +176,23 @@ max_edge_weight = 5.0
 enabled = false
 window_sizes = [64, 256, 1024, 4096]
 hop_ratio = 4
+eps = 1e-8
+
+[loss.band_power]
+enabled = false
+
+fft_sizes = [1024, 4096]
+hop_sizes = [256, 1024]
+win_lengths = [1024, 4096]
+
+number_of_bands = 24
+
+fmin = 27.5
+fmax = 22050.0
+
+absolute_weight = 1.0
+shape_weight = 1.0
+
 eps = 1e-8
 
 [optimizer.generator]

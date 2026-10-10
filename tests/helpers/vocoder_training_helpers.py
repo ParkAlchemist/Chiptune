@@ -13,7 +13,7 @@ from src.config.vocoder_config import (
     FeatureMatchingLossConfig,
     MRSTFTConfig,
     TemporalGradientLossConfig,
-    VocoderLossConfig,
+    VocoderLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig,
 )
 from src.losses.vocoder_losses import (
     VocoderLossBundle,
@@ -232,6 +232,8 @@ def make_training_test_loss_config(
         lambda_mrstft=1.0,
         lambda_waveform=0.5,
         lambda_temporal_gradient=0.1,
+        lambda_rms_envelope=0.1,
+        lambda_band_power=1.0,
 
         feature_matching=FeatureMatchingLossConfig(
             normalization=feature_matching_normalization,
@@ -258,6 +260,20 @@ def make_training_test_loss_config(
             edge_weight=1.0,
             max_edge_weight=5.0,
         ),
+
+        rms_envelope=RMSEnvelopeLossConfig(),
+        band_power=BandPowerLossConfig(
+            enabled=True,
+            fft_sizes=(32, 64),
+            hop_sizes=(8, 16),
+            win_lengths=(32, 64),
+            number_of_bands=6,
+            fmin=50.0,
+            fmax=4000.0,
+            absolute_weight=1.0,
+            shape_weight=1.0,
+            eps=1e-8,
+        )
     )
 
 
@@ -271,6 +287,7 @@ def make_training_fixture(
     learning_rate_discriminator: float = 1e-3,
     feature_matching_normalization: str = "layer_mean",
     device: torch.device | str = "cpu",
+    sample_rate: int = 8000,
 ) -> VocoderTrainingFixture:
     set_test_seed(seed)
 
@@ -310,7 +327,8 @@ def make_training_fixture(
     )
 
     loss_bundle = VocoderLossBundle(
-        loss_config
+        loss_config,
+        sample_rate=sample_rate
     ).to(device)
 
     cqt = torch.randn(

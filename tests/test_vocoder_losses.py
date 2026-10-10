@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from src.config.vocoder_config import MRSTFTConfig, VocoderDiscriminatorConfig, VocoderGeneratorModelConfig, \
-    TemporalGradientLossConfig, RMSEnvelopeLossConfig
+    TemporalGradientLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig
 from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
@@ -15,6 +15,7 @@ from src.losses.vocoder_losses import (
     generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
     FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
+    build_log_frequency_filterbank, MultiResolutionBandPowerLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
@@ -29,7 +30,8 @@ def test_mrstft_loss_finite():
                 hop_sizes=(64, 128),
                 win_lengths=(256, 512),
             )
-        )
+        ),
+        sample_rate=8000
     )
 
     real = torch.randn(2, 1, 4096)
@@ -422,6 +424,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.waveform.weighted
         + output.temporal_gradient.weighted
         + output.rms_envelope.weighted
+        + output.band_power.weighted
     )
 
     assert torch.allclose(
@@ -440,6 +443,8 @@ def test_generator_weighted_components_use_configured_lambdas() -> None:
         mrstft_weight=2.0,
         waveform_weight=0.25,
         temporal_gradient_weight=0.1,
+        rms_envelope_weight=0.1,
+        band_power_weight=0.1,
     )
 
     assert torch.allclose(
@@ -467,6 +472,16 @@ def test_generator_weighted_components_use_configured_lambdas() -> None:
         0.1 * output.temporal_gradient.raw,
     )
 
+    assert torch.allclose(
+        output.rms_envelope.weighted,
+        0.1 * output.rms_envelope.raw,
+    )
+
+    assert torch.allclose(
+        output.band_power.weighted,
+        0.1 * output.band_power.raw,
+    )
+
 
 def test_generator_group_totals() -> None:
     output = make_test_generator_loss_output()
@@ -490,6 +505,16 @@ def test_generator_group_totals() -> None:
     assert torch.allclose(
         output.time_frequency_total,
         output.mrstft.weighted,
+    )
+
+    assert torch.allclose(
+        output.time_macro_total,
+        output.rms_envelope.weighted
+    )
+
+    assert torch.allclose(
+        output.spectral_macro_total,
+        output.band_power.weighted,
     )
 
 
@@ -1214,6 +1239,304 @@ def test_rms_envelope_loss_handles_silence() -> None:
     )
 
     assert torch.isfinite(output.total)
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+def test_log_filterbank_shape() -> None:
+    filterbank = (
+        build_log_frequency_filterbank(
+            sample_rate=44100,
+            fft_size=1024,
+            number_of_bands=24,
+            fmin=27.5,
+            fmax=22050.0,
+        )
+    )
+
+    assert filterbank.shape == (
+        24,
+        513,
+    )
+
+    assert torch.isfinite(
+        filterbank
+    ).all()
+
+    assert torch.all(
+        filterbank >= 0.0
+    )
+
+
+def test_log_filterbank_partitions_covered_bins() -> None:
+    filterbank = (
+        build_log_frequency_filterbank(
+            sample_rate=44100,
+            fft_size=1024,
+            number_of_bands=24,
+            fmin=27.5,
+            fmax=22050.0,
+        )
+    )
+
+    coverage = filterbank.sum(dim=0)
+    covered = coverage > 0.0
+
+    assert torch.allclose(
+        coverage[covered],
+        torch.ones_like(
+            coverage[covered]
+        ),
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+
+def test_band_power_loss_is_zero_for_exact_match() -> None:
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=8000,
+            config=BandPowerLossConfig(
+                enabled=True,
+                fft_sizes=(64, 128),
+                hop_sizes=(16, 32),
+                win_lengths=(64, 128),
+                number_of_bands=8,
+                fmin=50.0,
+                fmax=4000.0,
+                absolute_weight=1.0,
+                shape_weight=1.0,
+                eps=1e-8,
+            ),
+        )
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+
+def test_band_power_separates_absolute_energy_and_shape() -> None:
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=8000,
+            config=BandPowerLossConfig(
+                enabled=True,
+                fft_sizes=(128,),
+                hop_sizes=(32,),
+                win_lengths=(128,),
+                number_of_bands=8,
+                fmin=50.0,
+                fmax=4000.0,
+                absolute_weight=1.0,
+                shape_weight=1.0,
+                eps=1e-8,
+            ),
+        )
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    prediction = 0.5 * target
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.absolute.item() > 0.0
+
+    assert output.shape.item() == pytest.approx(
+        0.0,
+        abs=1e-5,
+    )
+
+
+def test_band_power_shape_detects_frequency_shift() -> None:
+    sample_rate = 8000
+    length = 1024
+
+    time = torch.arange(
+        length,
+        dtype=torch.float32,
+    ) / sample_rate
+
+    target = torch.sin(
+        2.0 * torch.pi * 220.0 * time
+    ).reshape(1, 1, -1)
+
+    prediction = torch.sin(
+        2.0 * torch.pi * 880.0 * time
+    ).reshape(1, 1, -1)
+
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=sample_rate,
+            config=BandPowerLossConfig(
+                enabled=True,
+                fft_sizes=(256,),
+                hop_sizes=(64,),
+                win_lengths=(256,),
+                number_of_bands=12,
+                fmin=40.0,
+                fmax=4000.0,
+                absolute_weight=1.0,
+                shape_weight=1.0,
+                eps=1e-8,
+            ),
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.shape.item() > 0.0
+
+
+def test_band_power_total_matches_components() -> None:
+    config = BandPowerLossConfig(
+        enabled=True,
+        fft_sizes=(64, 128),
+        hop_sizes=(16, 32),
+        win_lengths=(64, 128),
+        number_of_bands=8,
+        fmin=50.0,
+        fmax=4000.0,
+        absolute_weight=2.0,
+        shape_weight=0.5,
+        eps=1e-8,
+    )
+
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=8000,
+            config=config,
+        )
+    )
+
+    prediction = torch.randn(1, 1, 512)
+    target = torch.randn(1, 1, 512)
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    expected = (
+        config.absolute_weight
+        * output.absolute
+        + config.shape_weight
+        * output.shape
+    )
+
+    assert torch.allclose(
+        output.total,
+        expected,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+
+def test_band_power_loss_backpropagates() -> None:
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=8000,
+            config=BandPowerLossConfig(
+                enabled=True,
+                fft_sizes=(64, 128),
+                hop_sizes=(16, 32),
+                win_lengths=(64, 128),
+                number_of_bands=8,
+                fmin=50.0,
+                fmax=4000.0,
+                absolute_weight=1.0,
+                shape_weight=1.0,
+                eps=1e-8,
+            ),
+        )
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        512,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
+
+
+def test_band_power_loss_handles_silence() -> None:
+    loss_function = (
+        MultiResolutionBandPowerLoss(
+            sample_rate=8000,
+            config=BandPowerLossConfig(
+                enabled=True,
+                fft_sizes=(64,),
+                hop_sizes=(16,),
+                win_lengths=(64,),
+                number_of_bands=8,
+                fmin=50.0,
+                fmax=4000.0,
+                absolute_weight=1.0,
+                shape_weight=1.0,
+                eps=1e-8,
+            ),
+        )
+    )
+
+    silence = torch.zeros(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        silence,
+        silence,
+    )
+
+    assert torch.isfinite(output.total)
+
     assert output.total.item() == pytest.approx(
         0.0,
         abs=1e-7,
