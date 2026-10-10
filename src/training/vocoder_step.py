@@ -104,10 +104,10 @@ def vocoder_train_micro_step(
         health_metrics.update(
             discriminator_branch_metrics(
                 discriminator_outputs_d,
-                mpd_periods=(
+                mpd_periods=tuple(
                     discriminator.config.mpd.periods,
                 ),
-                mrd_resolutions=(
+                mrd_resolutions=tuple(
                     discriminator.config.mrd.resolutions
                 ),
             )

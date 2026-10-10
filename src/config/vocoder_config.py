@@ -188,6 +188,16 @@ class VocoderLossConfig:
 
 
 @dataclass
+class VocoderLossCalibrationConfig:
+    enabled: bool = False
+
+    start_step: int = 5000
+    end_step: int = 10000
+
+    output_filename: str = "loss_calibration.json"
+
+
+@dataclass
 class VocoderDataConfig:
     chip_cache_root: str = ""
     sample_rate: int = 22050

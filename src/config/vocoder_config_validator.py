@@ -859,7 +859,7 @@ def _validate_loss_config(
                 f"temporal_gradient.lags must be non-negative."
             )
 
-        if temporal_gradient.normalization not in {"layer_norm", "real_magnitude"}:
+        if temporal_gradient.normalization not in {"none", "target_magnitude"}:
             errors.append(
                 f"Unsupported temporal_gradient normalization, "
                 f"got {temporal_gradient.normalization!r}."
@@ -935,7 +935,10 @@ def _validate_loss_config(
                 f"one value"
             )
 
-        for index, fft_size, hop_size, win_length in enumerate(zip(band_power.fft_sizes, band_power.hop_sizes, band_power.win_lengths)):
+        for index, values in enumerate(zip(band_power.fft_sizes, band_power.hop_sizes, band_power.win_lengths)):
+
+            fft_size, hop_size, win_length = values
+
             if fft_size <= 0:
                 errors.append(
                     f"band_power.fft_sizes must be positive, "
