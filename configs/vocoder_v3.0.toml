@@ -1,7 +1,7 @@
 schema_version = 1
 
 [run]
-experiment_name = "v3.test"
+experiment_name = "v3.0"
 output_root = "runs/vocoder_cqt"
 seed = 1337
 device = "cuda"
@@ -142,12 +142,12 @@ magnitude_compression = "log1p"
 
 [loss]
 lambda_adversarial = 1.0
-lambda_feature_matching = 1.0
-lambda_mrstft = 0.75
-lambda_waveform = 0.5
-lambda_temporal_gradient = 0.1
-lambda_rms_envelope = 1.0
-lambda_band_power = 0.1
+lambda_feature_matching = 2.0
+lambda_mrstft = 0.4
+lambda_waveform = 0.75
+lambda_temporal_gradient = 1.0
+lambda_rms_envelope = 2.0
+lambda_band_power = 0.15
 
 [loss.mrstft]
 fft_sizes = [128, 256, 512, 1024, 2048]

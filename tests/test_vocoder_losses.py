@@ -15,7 +15,7 @@ from src.losses.vocoder_losses import (
     generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
     FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
-    build_log_frequency_filterbank, MultiResolutionBandPowerLoss,
+    build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
@@ -1541,6 +1541,62 @@ def test_band_power_loss_handles_silence() -> None:
         0.0,
         abs=1e-7,
     )
+
+
+def test_log_filterbank_has_no_empty_bands() -> None:
+    filterbank = (
+        build_log_frequency_filterbank(
+            sample_rate=44100,
+            fft_size=1024,
+            number_of_bands=24,
+            fmin=27.5,
+            fmax=22050.0,
+        )
+    )
+
+    assert torch.all(
+        filterbank.sum(dim=1) > 0.0
+    )
+
+
+def test_spectral_convergence_handles_silent_target() -> None:
+    loss_function = SingleResolutionSTFTLoss(
+        fft_size=256,
+        hop_size=64,
+        win_length=256,
+        eps=1e-7,
+    )
+
+    fake = torch.randn(
+        2,
+        1,
+        2048,
+        requires_grad=True,
+    )
+
+    real = torch.zeros_like(fake)
+
+    spectral_convergence, log_magnitude = (
+        loss_function(fake, real)
+    )
+
+    total = (
+        spectral_convergence
+        + log_magnitude
+    )
+
+    total.backward()
+
+    assert torch.isfinite(
+        spectral_convergence
+    )
+
+    assert torch.isfinite(
+        log_magnitude
+    )
+
+    assert fake.grad is not None
+    assert torch.isfinite(fake.grad).all()
 
 
 
