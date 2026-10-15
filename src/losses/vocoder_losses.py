@@ -298,41 +298,54 @@ class SingleResolutionSTFTLoss(nn.Module):
             fake_magnitude: torch.Tensor,
             real_magnitude: torch.Tensor,
             *,
-            reference_floor: float = 1.0,
+            reference_floor: float,
     ) -> torch.Tensor:
         if fake_magnitude.shape != real_magnitude.shape:
             raise ValueError(
-                "Fake and real magnitudes must have the same shape."
+                "Fake and real magnitudes must have the same shape, "
+                f"got {tuple(fake_magnitude.shape)} and "
+                f"{tuple(real_magnitude.shape)}."
             )
 
-        if fake_magnitude.ndim < 3:
+        if fake_magnitude.ndim != 3:
             raise ValueError(
-                "Expected batched magnitudes."
+                "Expected STFT magnitudes [B,F,T], "
+                f"got {tuple(fake_magnitude.shape)}."
             )
 
-        reduction_dims = tuple(range(2, real_magnitude.ndim))
+        if reference_floor <= 0.0:
+            raise ValueError(
+                "reference_floor must be positive, "
+                f"got {reference_floor}."
+            )
 
         difference_norm = torch.linalg.vector_norm(
             real_magnitude - fake_magnitude,
-            dim=reduction_dims,
+            dim=(-2, -1),
         )
 
         reference_norm = torch.linalg.vector_norm(
             real_magnitude,
-            dim=reduction_dims,
-        ).clamp_min(reference_floor)
+            dim=(-2, -1),
+        )
 
-        return (difference_norm / reference_norm).mean()
+        reference_norm = reference_norm.clamp_min(
+            reference_floor
+        )
+
+        return (
+                difference_norm / reference_norm
+        ).mean()
 
     def forward(
-        self,
-        fake_audio: torch.Tensor,
-        real_audio: torch.Tensor,
+            self,
+            fake_audio: torch.Tensor,
+            real_audio: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         fake_mag = self._stft_magnitude(fake_audio)
         real_mag = self._stft_magnitude(real_audio)
 
-        spectral_convergence = self._stft_spectral_convergence(fake_mag, real_mag)
+        spectral_convergence = self._stft_spectral_convergence(fake_mag, real_mag, reference_floor=1.0)
 
         log_magnitude = F.l1_loss(
             torch.log(fake_mag),
@@ -948,7 +961,8 @@ def build_log_frequency_filterbank(
 
     if number_of_bands <= 1:
         raise ValueError(
-            f"number_of_bands must be at least 1, got {number_of_bands}"
+            "number_of_bands must be greater than one, "
+            f"got {number_of_bands}"
         )
 
     nyquist = sample_rate / 2.0
@@ -964,6 +978,10 @@ def build_log_frequency_filterbank(
         nyquist,
         fft_size // 2 + 1,
         dtype=torch.float32,
+    )
+
+    minimum_half_width = (
+            frequencies[1] - frequencies[0]
     )
 
     edges = torch.logspace(
@@ -984,42 +1002,74 @@ def build_log_frequency_filterbank(
     )
 
     filters: list[torch.Tensor] = []
-    minimum_half_width = frequencies.new_tensor(sample_rate / fft_size)
 
     for band_index in range(number_of_bands):
         left = edges[band_index]
         center = edges[band_index + 1]
         right = edges[band_index + 2]
 
-        half_width_left = torch.maximum(center - left, minimum_half_width)
-        half_width_right = torch.minimum(right - center, minimum_half_width)
+        half_width_left = torch.maximum(
+            center - left,
+            minimum_half_width,
+        )
 
-        adj_left = center - half_width_left
-        adj_right = center + half_width_right
+        half_width_right = torch.maximum(
+            right - center,
+            minimum_half_width,
+        )
 
-        rising = (frequencies - adj_left) / half_width_left.clamp_min(1e-12)
-        falling = (adj_right - frequencies) / half_width_right.clamp_min(1e-12)
-        triangle = torch.minimum(rising, falling).clamp(min=0.0, max=1.0)
+        adjusted_left = (center - half_width_left)
+
+        adjusted_right = (center + half_width_right)
+
+        rising = (frequencies - adjusted_left) / half_width_left.clamp_min(1e-12)
+
+        falling = (adjusted_right - frequencies) / half_width_right.clamp_min(1e-12)
+
+        triangle = torch.minimum(
+            rising,
+            falling,
+        ).clamp(
+            min=0.0,
+            max=1.0,
+        )
 
         filters.append(triangle)
 
-    filterbank = torch.stack(filters, dim=0)
+    filterbank = torch.stack(
+        filters,
+        dim=0,
+    )
 
-    coverage = filterbank.sum(dim=0, keepdim=True)
+    coverage = filterbank.sum(
+        dim=0,
+        keepdim=True,
+    )
+
     covered = coverage > 0.0
 
     filterbank = torch.where(
         covered,
-        filterbank / coverage.clamp_min(1e-12),
+        filterbank
+        / coverage.clamp_min(1e-12),
         filterbank,
     )
 
     row_sums = filterbank.sum(dim=1)
 
-    if torch.any(row_sums <= 0):
-        empty_indices = torch.nonzero(row_sums <= 0, as_tuple=False).flatten().tolist()
+    if torch.any(row_sums <= 0.0):
+        empty_indices = (
+            torch.nonzero(
+                row_sums <= 0.0,
+                as_tuple=False,
+            )
+            .flatten()
+            .tolist()
+        )
+
         raise RuntimeError(
-            f"Log-frequency filter bank contains empty bands at indices {empty_indices}."
+            "Log-frequency filter bank contains empty "
+            f"bands at indices {empty_indices}."
         )
 
     return filterbank

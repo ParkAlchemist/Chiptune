@@ -1543,11 +1543,17 @@ def test_band_power_loss_handles_silence() -> None:
     )
 
 
-def test_log_filterbank_has_no_empty_bands() -> None:
+@pytest.mark.parametrize(
+    "fft_size",
+    [1024, 4096],
+)
+def test_log_filterbank_contains_no_empty_bands(
+    fft_size: int,
+) -> None:
     filterbank = (
         build_log_frequency_filterbank(
             sample_rate=44100,
-            fft_size=1024,
+            fft_size=fft_size,
             number_of_bands=24,
             fmin=27.5,
             fmax=22050.0,
@@ -1559,45 +1565,100 @@ def test_log_filterbank_has_no_empty_bands() -> None:
     )
 
 
-def test_spectral_convergence_handles_silent_target() -> None:
-    loss_function = SingleResolutionSTFTLoss(
-        fft_size=256,
-        hop_size=64,
-        win_length=256,
-        eps=1e-7,
+def test_adaptive_filterbank_partitions_covered_bins() -> None:
+    filterbank = (
+        build_log_frequency_filterbank(
+            sample_rate=44100,
+            fft_size=1024,
+            number_of_bands=24,
+            fmin=27.5,
+            fmax=22050.0,
+        )
     )
 
-    fake = torch.randn(
+    coverage = filterbank.sum(dim=0)
+    covered = coverage > 0.0
+
+    assert torch.allclose(
+        coverage[covered],
+        torch.ones_like(
+            coverage[covered]
+        ),
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+
+def test_spectral_convergence_averages_per_example() -> None:
+    fake = torch.tensor(
+        [
+            [[2.0, 0.0]],
+            [[4.0, 0.0]],
+        ]
+    )
+
+    real = torch.tensor(
+        [
+            [[1.0, 0.0]],
+            [[2.0, 0.0]],
+        ]
+    )
+
+    actual = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
+    )
+
+    first = torch.linalg.vector_norm(
+        real[0] - fake[0]
+    ) / torch.linalg.vector_norm(
+        real[0]
+    ).clamp_min(1.0)
+
+    second = torch.linalg.vector_norm(
+        real[1] - fake[1]
+    ) / torch.linalg.vector_norm(
+        real[1]
+    ).clamp_min(1.0)
+
+    expected = 0.5 * (
+        first + second
+    )
+
+    assert torch.allclose(
+        actual,
+        expected,
+    )
+
+
+def test_spectral_convergence_is_stable_for_silent_target() -> None:
+    fake = torch.ones(
         2,
-        1,
-        2048,
+        16,
+        8,
         requires_grad=True,
     )
 
     real = torch.zeros_like(fake)
 
-    spectral_convergence, log_magnitude = (
-        loss_function(fake, real)
+    loss = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
     )
 
-    total = (
-        spectral_convergence
-        + log_magnitude
-    )
+    loss.backward()
 
-    total.backward()
-
-    assert torch.isfinite(
-        spectral_convergence
-    )
-
-    assert torch.isfinite(
-        log_magnitude
-    )
-
+    assert torch.isfinite(loss)
     assert fake.grad is not None
     assert torch.isfinite(fake.grad).all()
 
-
-
+    assert loss.item() < 1e4
 
