@@ -22,8 +22,8 @@ from src.training.vocoder.runtime import (
 from src.training.vocoder.logging import (
     write_model_manifest,
     write_model_structure,
-    write_torchinfo_generator_summary, ScalarMetricAccumulator,
-)
+    write_torchinfo_generator_summary, )
+from src.training.vocoder.metrics import ScalarMetricAccumulator
 
 
 def build_training_runtime(

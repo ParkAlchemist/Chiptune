@@ -34,8 +34,9 @@ from src.training.vocoder.preview import (
 )
 from src.training.vocoder.logging import (
     collect_context_parameter_metrics,
-    write_status, split_logging_metrics, log_interval_maxima,
-)
+    write_status, )
+from src.training.vocoder.metrics import split_logging_metrics, log_interval_maxima
+
 
 @dataclass
 class OptimizerUpdateResult:

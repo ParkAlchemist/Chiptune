@@ -8,7 +8,7 @@ import torch
 
 from src.config.vocoder_config import VocoderExperimentConfig
 from src.losses.vocoder_losses import VocoderLossBundle
-from src.training.vocoder.logging import ScalarMetricAccumulator
+from src.training.vocoder.metrics import ScalarMetricAccumulator
 from src.training.vocoder_step import (
     VocoderModels,
     VocoderOptimizers,
