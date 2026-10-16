@@ -329,13 +329,18 @@ class SingleResolutionSTFTLoss(nn.Module):
             dim=(-2, -1),
         )
 
-        reference_norm = reference_norm.clamp_min(
-            reference_floor
-        )
+        relative_error = (difference_norm / reference_norm.clamp_min(reference_floor))
 
-        return (
-                difference_norm / reference_norm
-        ).mean()
+        activity_weight = (reference_norm.detach() / reference_floor).clamp(min=0.0, max=1.0)
+
+        weighted_error = relative_error * activity_weight
+
+        weight_sum = activity_weight.sum()
+
+        if weight_sum.item() == 0.0:
+            return difference_norm.sum() * 0.0
+
+        return weighted_error.sum() / weight_sum.clamp_min(1.0)
 
     def forward(
             self,

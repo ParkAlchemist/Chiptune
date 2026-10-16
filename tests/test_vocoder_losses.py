@@ -1662,3 +1662,138 @@ def test_spectral_convergence_is_stable_for_silent_target() -> None:
 
     assert loss.item() < 1e4
 
+
+def test_spectral_convergence_ignores_fully_silent_reference() -> None:
+    fake = torch.ones(
+        2,
+        16,
+        8,
+        requires_grad=True,
+    )
+
+    real = torch.zeros_like(fake)
+
+    loss = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
+    )
+
+    loss.backward()
+
+    assert loss.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    assert fake.grad is not None
+    assert torch.isfinite(fake.grad).all()
+
+
+def test_spectral_convergence_matches_standard_formula_for_active_target() -> None:
+    real = torch.full(
+        (2, 16, 8),
+        2.0,
+    )
+
+    fake = real + 0.25
+
+    actual = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
+    )
+
+    difference_norm = torch.linalg.vector_norm(
+        real - fake,
+        dim=(-2, -1),
+    )
+
+    reference_norm = torch.linalg.vector_norm(
+        real,
+        dim=(-2, -1),
+    )
+
+    expected = (
+        difference_norm
+        / reference_norm
+    ).mean()
+
+    assert torch.allclose(
+        actual,
+        expected,
+        atol=1e-7,
+        rtol=1e-6,
+    )
+
+
+def test_spectral_convergence_downweights_quiet_reference() -> None:
+    real = torch.zeros(
+        2,
+        16,
+        8,
+    )
+
+    real[0].fill_(1.0)
+    real[1].fill_(0.001)
+
+    fake = real + 0.1
+
+    loss = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
+    )
+
+    assert torch.isfinite(loss)
+    assert loss.item() < 10.0
+
+
+def test_silent_example_does_not_dominate_active_example() -> None:
+    real = torch.zeros(
+        2,
+        16,
+        8,
+    )
+
+    real[0].fill_(1.0)
+
+    fake = real.clone()
+    fake[0] += 0.1
+    fake[1] += 10.0
+
+    mixed_loss = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake,
+            real,
+            reference_floor=1.0,
+        )
+    )
+
+    active_only_loss = (
+        SingleResolutionSTFTLoss
+        ._stft_spectral_convergence(
+            fake[:1],
+            real[:1],
+            reference_floor=1.0,
+        )
+    )
+
+    assert torch.allclose(
+        mixed_loss,
+        active_only_loss,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+
+
