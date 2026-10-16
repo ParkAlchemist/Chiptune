@@ -17,6 +17,7 @@ from src.training.vocoder.context import (
     TrainingComponents,
     TrainingState,
 )
+from src.training.vocoder.runtime import derive_training_seed, set_seed
 from src.training.vocoder_step import (
     finish_vocoder_optimizer_step,
     vocoder_train_micro_step, zero_vocoder_gradients,
@@ -225,7 +226,26 @@ def run_epoch(
     epoch: int,
     runtime,
     state: TrainingState,
+    resume_seed_offset: int = 0,
 ) -> None:
+
+    epoch_seed = derive_training_seed(
+        base_seed=runtime.config.run.seed,
+        epoch=epoch,
+        resume_global_step=resume_seed_offset,
+    )
+
+    set_seed(epoch_seed)
+
+    print(f"Epoch: {epoch + 1}, random seed: {epoch_seed}")
+
+    if runtime.writer is not None:
+        runtime.writer.add_scalar(
+            "run/epoch_seed",
+            epoch_seed,
+            state.global_step,
+        )
+
     config = runtime.config
     components = runtime.components
 
@@ -501,15 +521,23 @@ def run_training(
         f"{config.data.segment_frames * config.data.hop_length}"
     )
 
+    first_epoch = state.epoch
+
     try:
         for epoch in range(
             state.epoch,
             config.training.epochs,
         ):
+            is_first_epoch_in_process = epoch == first_epoch
+
+            resume_seed_offset = state.global_step if (
+                    runtime.resumed_from_checkpoint and is_first_epoch_in_process) else 0
+
             run_epoch(
                 epoch=epoch,
                 runtime=runtime,
                 state=state,
+                resume_seed_offset=resume_seed_offset,
             )
 
             step_vocoder_schedulers(

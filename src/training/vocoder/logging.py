@@ -16,6 +16,8 @@ import torch.nn as nn
 from src.config.vocoder_config import VocoderExperimentConfig
 from typing import TYPE_CHECKING
 
+from src.training.vocoder.runtime import derive_training_seed
+
 if TYPE_CHECKING:
     from src.training.vocoder.context import (
         RunPaths,

@@ -30,6 +30,23 @@ class StopController:
         self.stop_requested = True
 
 
+def derive_training_seed(
+        *,
+        base_seed: int,
+        epoch: int,
+        resume_global_step: int = 0,
+) -> int:
+    if base_seed < 0:
+        raise ValueError(f"base_seed must be non-negative, got {base_seed}")
+
+    if epoch < 0:
+        raise ValueError(f"epoch must be non-negative, got {epoch}")
+
+    if resume_global_step < 0:
+        raise ValueError(f"resume_global_step must be non-negative, got {resume_global_step}")
+
+    return (base_seed + epoch + resume_global_step) % (2**32)
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)

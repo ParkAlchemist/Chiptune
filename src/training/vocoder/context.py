@@ -65,5 +65,5 @@ class TrainingRuntime:
     stop_controller: Any
 
     metric_accumulator: ScalarMetricAccumulator
-
+    resumed_from_checkpoint: bool = False
 

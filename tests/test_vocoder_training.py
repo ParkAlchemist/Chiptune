@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from src.training.vocoder.accumulation import accumulation_windows
+from src.training.vocoder.runtime import derive_training_seed, set_seed
 from src.training.vocoder_step import vocoder_train_step, zero_vocoder_gradients, vocoder_train_micro_step, \
     finish_vocoder_optimizer_step
 from tests.helpers.vocoder_training_helpers import make_training_fixture, assert_module_parameters_equal, \
@@ -364,5 +365,73 @@ def test_micro_step_uses_configured_feature_matching_normalization() -> None:
         rel=1e-6,
         abs=1e-7,
     )
+
+
+def test_training_seed_uses_epoch() -> None:
+    assert derive_training_seed(
+        base_seed=1337,
+        epoch=0,
+    ) == 1337
+
+    assert derive_training_seed(
+        base_seed=1337,
+        epoch=1,
+    ) == 1338
+
+    assert derive_training_seed(
+        base_seed=1337,
+        epoch=10,
+    ) == 1347
+
+
+def test_training_seed_uses_resume_step() -> None:
+    seed = derive_training_seed(
+        base_seed=1337,
+        epoch=2,
+        resume_global_step=10000,
+    )
+
+    assert seed == 11339
+
+
+def test_resume_seed_changes_random_sequence() -> None:
+    first_seed = derive_training_seed(
+        base_seed=1337,
+        epoch=2,
+        resume_global_step=10000,
+    )
+
+    second_seed = derive_training_seed(
+        base_seed=1337,
+        epoch=2,
+        resume_global_step=12000,
+    )
+
+    set_seed(first_seed)
+    first_values = torch.rand(8)
+
+    set_seed(second_seed)
+    second_values = torch.rand(8)
+
+    assert not torch.equal(
+        first_values,
+        second_values,
+    )
+
+
+def test_derived_seed_is_deterministic() -> None:
+    seed = derive_training_seed(
+        base_seed=1337,
+        epoch=3,
+        resume_global_step=5000,
+    )
+
+    set_seed(seed)
+    first = torch.rand(8)
+
+    set_seed(seed)
+    second = torch.rand(8)
+
+    assert torch.equal(first, second)
 
 

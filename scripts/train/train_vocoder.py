@@ -99,6 +99,8 @@ def main() -> None:
             f"global_step={state.global_step}"
         )
 
+        runtime.resumed_from_checkpoint = True
+
     if state is None:
         from src.training.vocoder.context import TrainingState
 
