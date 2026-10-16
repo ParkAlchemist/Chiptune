@@ -22,7 +22,7 @@ from src.training.vocoder.runtime import (
 from src.training.vocoder.logging import (
     write_model_manifest,
     write_model_structure,
-    write_torchinfo_generator_summary,
+    write_torchinfo_generator_summary, ScalarMetricAccumulator,
 )
 
 
@@ -132,6 +132,8 @@ def build_training_runtime(
         config.control
     )
 
+    metric_accumulator = ScalarMetricAccumulator()
+
     return TrainingRuntime(
         config=config,
         config_path=config_path,
@@ -143,5 +145,6 @@ def build_training_runtime(
         overfit_batches=overfit_batches,
         writer=writer,
         stop_controller=stop_controller,
+        metric_accumulator=metric_accumulator
     )
 

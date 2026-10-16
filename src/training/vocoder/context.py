@@ -8,6 +8,7 @@ import torch
 
 from src.config.vocoder_config import VocoderExperimentConfig
 from src.losses.vocoder_losses import VocoderLossBundle
+from src.training.vocoder.logging import ScalarMetricAccumulator
 from src.training.vocoder_step import (
     VocoderModels,
     VocoderOptimizers,
@@ -62,5 +63,7 @@ class TrainingRuntime:
     overfit_batches: list[dict] | None
     writer: Any
     stop_controller: Any
+
+    metric_accumulator: ScalarMetricAccumulator
 
 

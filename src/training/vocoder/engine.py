@@ -33,7 +33,7 @@ from src.training.vocoder.preview import (
 )
 from src.training.vocoder.logging import (
     collect_context_parameter_metrics,
-    write_status,
+    write_status, split_logging_metrics, log_interval_maxima,
 )
 
 @dataclass
@@ -271,6 +271,25 @@ def run_epoch(
                 state=state,
                 device=runtime.device,
             )
+
+            step_metrics = dict(update.losses)
+
+            step_metrics.update(
+                collect_context_parameter_metrics(
+                    components.models.generator
+                )
+            )
+
+            step_metrics.update(
+                get_vocoder_learning_rates(
+                    components
+                )
+            )
+
+            averaged_metrics, latest_metrics = split_logging_metrics(step_metrics)
+
+            runtime.metric_accumulator.update(averaged_metrics)
+
         except FloatingPointError as exc:
             emergency_path = (
                 runtime.paths.checkpoint_dir
@@ -305,20 +324,35 @@ def run_epoch(
             config.logging.log_every_steps,
         )
         ):
-            log_values = dict(losses)
+            interval_means = runtime.metric_accumulator.means()
 
-            log_values.update(
-                collect_context_parameter_metrics(
-                    components.models.generator
-                )
-            )
-
-            for key, value in log_values.items():
+            for key, value in interval_means.items():
                 runtime.writer.add_scalar(
                     key,
                     value,
                     step,
                 )
+
+            for name, value in latest_metrics.items():
+                runtime.writer.add_scalar(
+                    name,
+                    value,
+                    step,
+                )
+
+            runtime.writer.add_scalar(
+                "logging/window_count",
+                runtime.metric_accumulator.maximum_count(),
+                step,
+            )
+
+            log_interval_maxima(
+                writer=runtime.writer,
+                accumulator=runtime.metric_accumulator,
+                global_step=step,
+            )
+
+            runtime.metric_accumulator.reset()
 
         progress.set_postfix(
             {
