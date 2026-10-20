@@ -54,6 +54,7 @@ def build_temporal_gradient_config(
 
     return TemporalGradientLossConfig(
         enabled=source.enabled,
+        mode=source.mode,
         lags=source.lags,
         normalization=source.normalization,
         scale_floor=source.scale_floor,
@@ -61,6 +62,10 @@ def build_temporal_gradient_config(
         edge_weighting=source.edge_weighting,
         edge_weight=source.edge_weight,
         max_edge_weight=source.max_edge_weight,
+        window_sizes=source.window_sizes,
+        hop_ratio=source.hop_ratio,
+        mean_weight=source.mean_weight,
+        peak_weight=source.peak_weight,
     )
 
 

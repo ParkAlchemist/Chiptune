@@ -16,7 +16,7 @@ from src.losses.vocoder_losses import (
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
     FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
     build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss, log_spectral_flatness,
-    SubBandSpectralFlatnessLoss,
+    SubBandSpectralFlatnessLoss, MultiScaleSlewEnvelopeLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
@@ -2127,5 +2127,341 @@ def test_spectral_flatness_rejects_bands_with_too_few_bins() -> None:
                 )
             ),
         )
+
+
+def test_slew_envelope_is_zero_for_exact_match() -> None:
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1, 2, 4),
+            window_sizes=(16, 64),
+            hop_ratio=4,
+            mean_weight=1.0,
+            peak_weight=0.5,
+        )
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+def test_slew_envelope_is_polarity_invariant() -> None:
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1, 2, 4),
+            window_sizes=(16, 64),
+        )
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        -waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+
+def test_peak_slew_penalizes_smoothed_transition() -> None:
+    target = torch.full(
+        (1, 1, 256),
+        -1.0,
+    )
+
+    target[..., 128:] = 1.0
+
+    prediction = target.clone()
+
+    prediction[
+        ...,
+        120:136,
+    ] = torch.linspace(
+        -1.0,
+        1.0,
+        16,
+    )
+
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1,),
+            window_sizes=(32,),
+            hop_ratio=4,
+            mean_weight=0.0,
+            peak_weight=1.0,
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.peak.item() > 0.0
+
+
+def test_mean_slew_detects_missing_edges() -> None:
+    target = torch.sign(
+        torch.sin(
+            2.0
+            * torch.pi
+            * torch.arange(512)
+            / 32.0
+        )
+    ).reshape(1, 1, -1)
+
+    prediction = torch.zeros_like(
+        target
+    )
+
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1, 2),
+            window_sizes=(32, 64),
+            mean_weight=1.0,
+            peak_weight=0.0,
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.mean.item() > 0.0
+
+
+def test_slew_envelope_penalizes_chatter_in_silence() -> None:
+    target = torch.zeros(
+        1,
+        1,
+        512,
+    )
+
+    prediction = torch.ones_like(
+        target
+    )
+
+    prediction[..., 1::2] = -1.0
+
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1, 2, 4),
+            window_sizes=(16, 64),
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() > 0.0
+
+
+def test_slew_envelope_backpropagates() -> None:
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1, 2, 4),
+            window_sizes=(16, 64),
+        )
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        512,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
+
+
+def test_slew_envelope_relaxes_edge_position_within_pooling_window() -> None:
+    target = torch.zeros(
+        1,
+        1,
+        256,
+    )
+
+    # Target transition occurs between samples 99 and 100.
+    target[..., 100:] = 1.0
+
+    prediction = torch.zeros_like(
+        target
+    )
+
+    # Generated transition is shifted by four samples.
+    prediction[..., 104:] = 1.0
+
+    pointwise_loss = (
+        MultiScaleTemporalGradientLoss(
+            lags=(1,),
+        )(
+            prediction,
+            target,
+        )
+    )
+
+    relaxed_output = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1,),
+            window_sizes=(32,),
+            hop_ratio=1,
+            mean_weight=1.0,
+            peak_weight=0.5,
+        )(
+            prediction,
+            target,
+        )
+    )
+
+    # Both transitions remain inside the same 32-sample
+    # pooling region: samples 96–127.
+    #
+    # Both have:
+    # - the same total slew,
+    # - the same peak slew,
+    # - the same pooled location.
+    assert relaxed_output.mean.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    assert relaxed_output.peak.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    assert relaxed_output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    # Pointwise derivative matching still detects the
+    # exact sample-position difference.
+    assert pointwise_loss.item() > 0.0
+
+
+def test_overlapping_slew_envelope_prefers_small_shift_over_missing_edge() -> None:
+    target = torch.zeros(
+        1,
+        1,
+        512,
+    )
+
+    target[..., 128:] = 1.0
+
+    slightly_shifted = torch.zeros_like(
+        target
+    )
+
+    slightly_shifted[..., 132:] = 1.0
+
+    missing = torch.zeros_like(
+        target
+    )
+
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1,),
+            window_sizes=(32, 64),
+            hop_ratio=4,
+            mean_weight=1.0,
+            peak_weight=0.5,
+        )
+    )
+
+    shifted_loss = loss_function(
+        slightly_shifted,
+        target,
+    ).total
+
+    missing_loss = loss_function(
+        missing,
+        target,
+    ).total
+
+    assert shifted_loss < missing_loss
+
+
+def test_slew_envelope_penalty_grows_when_edge_moves_outside_local_region() -> None:
+    target = torch.zeros(
+        1,
+        1,
+        512,
+    )
+
+    target[..., 128:] = 1.0
+
+    near = torch.zeros_like(
+        target
+    )
+    near[..., 132:] = 1.0
+
+    far = torch.zeros_like(
+        target
+    )
+    far[..., 224:] = 1.0
+
+    loss_function = (
+        MultiScaleSlewEnvelopeLoss(
+            lags=(1,),
+            window_sizes=(32, 64),
+            hop_ratio=4,
+            mean_weight=1.0,
+            peak_weight=0.5,
+        )
+    )
+
+    near_loss = loss_function(
+        near,
+        target,
+    ).total
+
+    far_loss = loss_function(
+        far,
+        target,
+    ).total
+
+    assert near_loss < far_loss
 
 

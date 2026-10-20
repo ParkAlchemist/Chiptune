@@ -927,54 +927,126 @@ def _validate_loss_config(
             f"got {feature_matching.eps}."
         )
 
-    temporal_gradient = loss.temporal_gradient
+    temporal = loss.temporal_gradient
 
-    if temporal_gradient.enabled:
-        if len(temporal_gradient.lags) == 0:
+    if temporal.mode not in {
+        "pointwise_gradient",
+        "slew_envelope",
+    }:
+        errors.append(
+            "loss.temporal_gradient.mode must be "
+            "'pointwise_gradient' or "
+            f"'slew_envelope', got {temporal.mode!r}."
+        )
+
+    if not temporal.lags:
+        errors.append(
+            "loss.temporal_gradient.lags must "
+            "contain at least one lag."
+        )
+
+    if any(
+            lag <= 0
+            for lag in temporal.lags
+    ):
+        errors.append(
+            "loss.temporal_gradient.lags must "
+            "contain only positive values."
+        )
+
+    if len(set(temporal.lags)) != len(
+            temporal.lags
+    ):
+        errors.append(
+            "loss.temporal_gradient.lags must "
+            "contain unique values."
+        )
+
+    if temporal.eps <= 0.0:
+        errors.append(
+            "loss.temporal_gradient.eps must "
+            "be positive."
+        )
+
+    if temporal.mode == "pointwise_gradient":
+        if temporal.normalization not in {
+            "none",
+            "target_magnitude",
+        }:
             errors.append(
-                f"temporal_gradient.lags must contain at least one value"
+                "loss.temporal_gradient.normalization "
+                "has an unsupported value."
             )
 
-        if len(temporal_gradient.lags) != len(set(temporal_gradient.lags)):
+        if temporal.scale_floor <= 0.0:
             errors.append(
-                f"all temporal_gradient.lags must be unique."
+                "loss.temporal_gradient.scale_floor "
+                "must be positive."
             )
 
-        if any(value <= 0 for value in temporal_gradient.lags):
+        if temporal.edge_weight < 0.0:
             errors.append(
-                f"temporal_gradient.lags must be non-negative."
+                "loss.temporal_gradient.edge_weight "
+                "must be non-negative."
             )
 
-        if temporal_gradient.normalization not in {"none", "target_magnitude"}:
+        if temporal.max_edge_weight < 1.0:
             errors.append(
-                f"Unsupported temporal_gradient normalization, "
-                f"got {temporal_gradient.normalization!r}."
+                "loss.temporal_gradient."
+                "max_edge_weight must be at least 1."
             )
 
-        if temporal_gradient.scale_floor <= 0.0:
+    if temporal.mode == "slew_envelope":
+        if not temporal.window_sizes:
             errors.append(
-                f"temporal_gradient.scale_floor must be positive, "
-                f"got {temporal_gradient.scale_floor}."
+                "loss.temporal_gradient.window_sizes "
+                "must contain at least one value."
             )
 
-        if temporal_gradient.eps <= 0.0:
+        if any(
+                window_size <= 0
+                for window_size
+                in temporal.window_sizes
+        ):
             errors.append(
-                f"temporal_gradient.eps must be positive, "
-                f"got {temporal_gradient.eps}."
+                "loss.temporal_gradient.window_sizes "
+                "must contain only positive values."
             )
 
-        if temporal_gradient.edge_weighting:
-            if temporal_gradient.edge_weight <= 0.0:
-                errors.append(
-                    f"temporal_gradient.edge_weighting must be positive, "
-                    f"got {temporal_gradient.edge_weight}."
-                )
+        if len(
+                set(temporal.window_sizes)
+        ) != len(temporal.window_sizes):
+            errors.append(
+                "loss.temporal_gradient.window_sizes "
+                "must contain unique values."
+            )
 
-            if temporal_gradient.max_edge_weight < 1.0:
-                errors.append(
-                    f"temporal_gradient.max_edge_weight must be "
-                    f"at least 1.0, got {temporal_gradient.max_edge_weight}."
-                )
+        if temporal.hop_ratio <= 0:
+            errors.append(
+                "loss.temporal_gradient.hop_ratio "
+                "must be positive."
+            )
+
+        if temporal.mean_weight < 0.0:
+            errors.append(
+                "loss.temporal_gradient.mean_weight "
+                "must be non-negative."
+            )
+
+        if temporal.peak_weight < 0.0:
+            errors.append(
+                "loss.temporal_gradient.peak_weight "
+                "must be non-negative."
+            )
+
+        if (
+                temporal.mean_weight == 0.0
+                and temporal.peak_weight == 0.0
+        ):
+            errors.append(
+                "At least one slew-envelope component "
+                "weight must be positive."
+            )
 
     rms_envelope = loss.rms_envelope
     if rms_envelope.enabled:

@@ -18,7 +18,8 @@ from src.losses.vocoder_losses import (
     make_weighted_loss_component, family_balanced_generator_adversarial_loss, family_balanced_feature_matching_loss,
     FamilyDiscriminatorLossOutput, FamilyLossOutput, MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput,
     RMSEnvelopeScaleLossOutput, MultiResolutionBandPowerLossOutput, SubBandSpectralFlatnessLossOutput,
-    SubBandSpectralFlatnessLoss, SpectralFlatnessBandLossOutput,
+    SubBandSpectralFlatnessLoss, SpectralFlatnessBandLossOutput, MultiScaleTemporalGradientLoss,
+    MultiScaleSlewEnvelopeLossOutput,
 )
 
 
@@ -306,6 +307,7 @@ def make_test_generator_loss_output(
     waveform_weight: float = 0.2,
     temporal_gradient_raw: float = 6.0,
     temporal_gradient_weight: float = 0.1,
+    temporal_gradient_output: MultiScaleSlewEnvelopeLossOutput | None = None,
     rms_envelope_raw: float = 7.0,
     rms_envelope_weight: float = 0.05,
     rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None = None,
@@ -435,6 +437,7 @@ def make_test_generator_loss_output(
             feature_matching_families
         ),
         mrstft_output=mrstft_output,
+        temporal_gradient_output=temporal_gradient_output,
         rms_envelope_output=rms_envelope_output,
         band_power_output=band_power_output,
         spectral_flatness_output=spectral_flatness_output,

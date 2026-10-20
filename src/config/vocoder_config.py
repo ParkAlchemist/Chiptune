@@ -10,6 +10,7 @@ SchedulerName = Literal["none", "exponential", "cosine"]
 SchedulerInterval = Literal["epoch", "optimizer_step"]
 ContextBlockType = Literal["convnext", "multi_kernel_convnext"]
 FeatureMatchingNormalization = Literal["layer_mean", "real_magnitude", "real_rms"]
+TemporalLossMode = Literal["pointwise_gradient", "slew_envelope"]
 
 
 @dataclass
@@ -115,6 +116,8 @@ class FeatureMatchingLossConfig:
 class TemporalGradientLossConfig:
     enabled: bool = False
 
+    mode: TemporalLossMode = "pointwise_gradient"
+
     lags: tuple[int, ...] = (1, 2, 4)
     normalization: Literal["none", "target_magnitude"] = "none"
     scale_floor: float = 1e-3
@@ -123,6 +126,17 @@ class TemporalGradientLossConfig:
     edge_weighting: bool = False
     edge_weight: float = 1.0
     max_edge_weight: float = 5.0
+
+    window_sizes: tuple[int, ...] = (
+        32,
+        128,
+        256,
+    )
+
+    hop_ratio: int = 4
+
+    mean_weight: float = 1.0
+    peak_weight: float = 0.5
 
 
 @dataclass

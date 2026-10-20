@@ -140,6 +140,38 @@ class SubBandSpectralFlatnessLossOutput:
 
 
 @dataclass(frozen=True)
+class SlewEnvelopeScaleLossOutput:
+    lag: int
+    window_size: int
+    hop_size: int
+
+    mean: torch.Tensor
+    peak: torch.Tensor
+    mean_weight: float
+    peak_weight: float
+
+    @property
+    def total(self) -> torch.Tensor:
+        return (
+            self.mean_weight * self.mean
+            + self.peak_weight * self.peak
+        )
+
+
+@dataclass(frozen=True)
+class MultiScaleSlewEnvelopeLossOutput:
+    total: torch.Tensor
+
+    mean: torch.Tensor
+    peak: torch.Tensor
+
+    scales: tuple[
+        SlewEnvelopeScaleLossOutput,
+        ...,
+    ]
+
+
+@dataclass(frozen=True)
 class FamilyLossOutput:
     total: torch.Tensor
     families: dict[str, torch.Tensor]
@@ -170,6 +202,7 @@ class VocoderGeneratorLossOutput:
     spectral_flatness: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
+    temporal_gradient_output: MultiScaleSlewEnvelopeLossOutput | None
     rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None
     band_power_output: MultiResolutionBandPowerLossOutput | None
     spectral_flatness_output: SubBandSpectralFlatnessLossOutput | None
@@ -506,15 +539,41 @@ class VocoderLossBundle(nn.Module):
 
         self.config = config
         self.mrstft_loss = MultiResolutionSTFTLoss(config.mrstft)
-        self.temporal_gradient_loss = MultiScaleTemporalGradientLoss(
-            lags=config.temporal_gradient.lags,
-            normalization=config.temporal_gradient.normalization,
-            scale_floor=config.temporal_gradient.scale_floor,
-            eps=config.temporal_gradient.eps,
-            edge_weighting=config.temporal_gradient.edge_weighting,
-            edge_weight=config.temporal_gradient.edge_weight,
-            max_edge_weight=config.temporal_gradient.max_edge_weight,
-        ) if config.temporal_gradient.enabled else None
+        self.temporal_gradient_loss: (
+                nn.Module | None
+        )
+
+        if not config.temporal_gradient.enabled:
+            self.temporal_gradient_loss = None
+
+        elif config.temporal_gradient.mode == "pointwise_gradient":
+            self.temporal_gradient_loss = (
+                MultiScaleTemporalGradientLoss(
+                    lags=config.temporal_gradient.lags,
+                    normalization=config.temporal_gradient.normalization,
+                    scale_floor=config.temporal_gradient.scale_floor,
+                    eps=config.temporal_gradient.eps,
+                    edge_weighting=config.temporal_gradient.edge_weighting,
+                    edge_weight=config.temporal_gradient.edge_weight,
+                    max_edge_weight=config.temporal_gradient.max_edge_weight,
+                )
+            )
+        elif config.temporal_gradient.mode == "slew_envelope":
+            self.temporal_gradient_loss = (
+                MultiScaleSlewEnvelopeLoss(
+                    lags=config.temporal_gradient.lags,
+                    window_sizes=config.temporal_gradient.window_sizes,
+                    hop_ratio=config.temporal_gradient.hop_ratio,
+                    mean_weight=config.temporal_gradient.mean_weight,
+                    peak_weight=config.temporal_gradient.peak_weight,
+                )
+            )
+        else:
+            raise ValueError (
+            "Unsupported temporal-gradient mode: "
+            f"{config.temporal_gradient.mode!r}."
+
+        )
         self.rms_envelope_loss = MultiScaleRMSEnvelopeLoss(
             config.rms_envelope
         ) if config.rms_envelope.enabled else None
@@ -726,6 +785,104 @@ def lagged_difference(
     return waveform[..., lag:] - waveform[..., :-lag]
 
 
+def lagged_slew(
+    waveform: torch.Tensor,
+    *,
+    lag: int,
+) -> torch.Tensor:
+    """
+    Absolute lagged waveform derivative.
+
+    Input:
+        Waveform: [B,C,T]
+
+    Output:
+        [B,C,T-lag]
+    """
+    if waveform.ndim != 3:
+        raise ValueError(
+            "Expected waveform [B,C,T], "
+            f"got {tuple(waveform.shape)}."
+        )
+
+    if lag <= 0:
+        raise ValueError(
+            f"lag must be positive, got {lag}."
+        )
+
+    if waveform.shape[-1] <= lag:
+        raise ValueError(
+            "Waveform length must exceed lag. "
+            f"Length={waveform.shape[-1]}, "
+            f"lag={lag}."
+        )
+
+    difference = (
+        waveform[..., lag:]
+        - waveform[..., :-lag]
+    )
+
+    return (
+        difference.abs()
+        / float(lag)
+    )
+
+
+def pooled_slew_envelopes(
+    slew: torch.Tensor,
+    *,
+    window_size: int,
+    hop_size: int,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+]:
+    if slew.ndim != 3:
+        raise ValueError(
+            "Expected slew tensor [B,C,T], "
+            f"got {tuple(slew.shape)}."
+        )
+
+    if window_size <= 0:
+        raise ValueError(
+            "window_size must be positive, "
+            f"got {window_size}."
+        )
+
+    if hop_size <= 0:
+        raise ValueError(
+            "hop_size must be positive, "
+            f"got {hop_size}."
+        )
+
+    if slew.shape[-1] < window_size:
+        raise ValueError(
+            "Slew tensor is shorter than the "
+            "pooling window. "
+            f"Length={slew.shape[-1]}, "
+            f"window_size={window_size}."
+        )
+    mean_envelope = F.avg_pool1d(
+        slew,
+        kernel_size=window_size,
+        stride=hop_size,
+        padding=0,
+        count_include_pad=False,
+    )
+
+    peak_envelope = F.max_pool1d(
+        slew,
+        kernel_size=window_size,
+        stride=hop_size,
+        padding=0,
+    )
+
+    return (
+        mean_envelope,
+        peak_envelope,
+    )
+
+
 class MultiScaleTemporalGradientLoss(nn.Module):
     def __init__(
             self,
@@ -821,6 +978,207 @@ class MultiScaleTemporalGradientLoss(nn.Module):
             per_scale_losses.append(scale_loss)
 
         return torch.stack(per_scale_losses).mean()
+
+
+class MultiScaleSlewEnvelopeLoss(
+    nn.Module
+):
+    def __init__(
+        self,
+        *,
+        lags: tuple[int, ...] = (
+            1,
+            2,
+            4,
+        ),
+        window_sizes: tuple[int, ...] = (
+            32,
+            128,
+            256,
+        ),
+        hop_ratio: int = 4,
+        mean_weight: float = 1.0,
+        peak_weight: float = 0.5,
+    ) -> None:
+        super().__init__()
+
+        if not lags:
+            raise ValueError(
+                "At least one lag is required."
+            )
+
+        if any(lag <= 0 for lag in lags):
+            raise ValueError(
+                "All lags must be positive."
+            )
+
+        if len(set(lags)) != len(lags):
+            raise ValueError(
+                "Lags must be unique."
+            )
+
+        if not window_sizes:
+            raise ValueError(
+                "At least one window size "
+                "is required."
+            )
+
+        if any(
+            window_size <= 0
+            for window_size in window_sizes
+        ):
+            raise ValueError(
+                "All window sizes must be positive."
+            )
+
+        if len(set(window_sizes)) != len(window_sizes):
+            raise ValueError(
+                "Window sizes must be unique."
+            )
+
+        if hop_ratio <= 0:
+            raise ValueError(
+                "hop_ratio must be positive."
+            )
+
+        if mean_weight < 0.0:
+            raise ValueError(
+                "mean_weight must be non-negative."
+            )
+
+        if peak_weight < 0.0:
+            raise ValueError(
+                "peak_weight must be non-negative."
+            )
+
+        if (
+            mean_weight == 0.0
+            and peak_weight == 0.0
+        ):
+            raise ValueError(
+                "At least one component weight "
+                "must be positive."
+            )
+
+        self.lags = tuple(sorted(lags))
+        self.window_sizes = tuple(
+            sorted(window_sizes)
+        )
+
+        self.hop_ratio = hop_ratio
+        self.mean_weight = mean_weight
+        self.peak_weight = peak_weight
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> MultiScaleSlewEnvelopeLossOutput:
+        if prediction.shape != target.shape:
+            raise ValueError(
+                "Prediction and target waveform "
+                "shapes differ: "
+                f"{tuple(prediction.shape)} versus "
+                f"{tuple(target.shape)}."
+            )
+
+        scale_outputs: list[
+            SlewEnvelopeScaleLossOutput
+        ] = []
+
+        for lag in self.lags:
+            prediction_slew = lagged_slew(
+                prediction,
+                lag=lag,
+            )
+
+            target_slew = lagged_slew(
+                target,
+                lag=lag,
+            )
+
+            for window_size in (
+                self.window_sizes
+            ):
+                hop_size = max(
+                    1,
+                    window_size
+                    // self.hop_ratio,
+                )
+
+                (
+                    prediction_mean,
+                    prediction_peak,
+                ) = pooled_slew_envelopes(
+                    prediction_slew,
+                    window_size=window_size,
+                    hop_size=hop_size,
+                )
+
+                (
+                    target_mean,
+                    target_peak,
+                ) = pooled_slew_envelopes(
+                    target_slew,
+                    window_size=window_size,
+                    hop_size=hop_size,
+                )
+
+                mean_loss = F.l1_loss(
+                    prediction_mean,
+                    target_mean,
+                    reduction="mean",
+                )
+
+                peak_loss = F.l1_loss(
+                    prediction_peak,
+                    target_peak,
+                    reduction="mean",
+                )
+
+                scale_outputs.append(
+                    SlewEnvelopeScaleLossOutput(
+                        lag=lag,
+                        window_size=window_size,
+                        hop_size=hop_size,
+                        mean=mean_loss,
+                        peak=peak_loss,
+                        mean_weight=self.mean_weight,
+                        peak_weight=self.peak_weight,
+                    )
+                )
+
+        if not scale_outputs:
+            raise RuntimeError(
+                "Slew-envelope loss produced no "
+                "configured scale outputs."
+            )
+
+        mean_loss = torch.stack(
+            [
+                output.mean
+                for output in scale_outputs
+            ]
+        ).mean()
+
+        peak_loss = torch.stack(
+            [
+                output.peak
+                for output in scale_outputs
+            ]
+        ).mean()
+
+        total = (
+            self.mean_weight * mean_loss
+            + self.peak_weight * peak_loss
+        )
+
+        return MultiScaleSlewEnvelopeLossOutput(
+            total=total,
+            mean=mean_loss,
+            peak=peak_loss,
+            scales=tuple(scale_outputs),
+        )
 
 
 def rms_envelope(
@@ -2021,8 +2379,20 @@ def compute_vocoder_generator_loss(
         real_audio,
     )
 
+    temporal_gradient_output = None
+
     if loss_bundle.temporal_gradient_loss is None:
         loss_temporal_gradient_raw = fake_audio.new_zeros(())
+
+
+    elif isinstance(loss_bundle.temporal_gradient_loss, MultiScaleSlewEnvelopeLoss):
+        temporal_gradient_output = loss_bundle.temporal_gradient_loss(
+            fake_audio,
+            real_audio,
+        )
+
+        loss_temporal_gradient_raw = temporal_gradient_output.total
+
     else:
         loss_temporal_gradient_raw = loss_bundle.temporal_gradient_loss(
             fake_audio,
@@ -2123,6 +2493,7 @@ def compute_vocoder_generator_loss(
         band_power=band_power,
         spectral_flatness=spectral_flatness,
         mrstft_output=mrstft_output,
+        temporal_gradient_output=temporal_gradient_output,
         rms_envelope_output=rms_envelope_output,
         band_power_output=band_power_output,
         adversarial_families=adversarial_output.families,
@@ -2331,6 +2702,56 @@ def generator_loss_metrics(
             .detach()
             .cpu()
         )
+
+    if (
+            output.temporal_gradient_output
+            is not None
+    ):
+        temporal_output = (
+            output.temporal_gradient_output
+        )
+
+        metrics[
+            "loss_g_slew_envelope_mean"
+        ] = float(
+            temporal_output.mean
+            .detach()
+            .cpu()
+        )
+
+        metrics[
+            "loss_g_slew_envelope_peak"
+        ] = float(
+            temporal_output.peak
+            .detach()
+            .cpu()
+        )
+
+        for scale in temporal_output.scales:
+            prefix = (
+                "loss_g_slew_envelope_scale/"
+                f"lag_{scale.lag}"
+                f"_window_{scale.window_size}"
+                f"_hop_{scale.hop_size}"
+            )
+
+            metrics[
+                f"{prefix}/mean"
+            ] = float(
+                scale.mean.detach().cpu()
+            )
+
+            metrics[
+                f"{prefix}/peak"
+            ] = float(
+                scale.peak.detach().cpu()
+            )
+
+            metrics[
+                f"{prefix}/total"
+            ] = float(
+                scale.total.detach().cpu()
+            )
 
     if output.rms_envelope_output is not None:
         for scale in output.rms_envelope_output.scales:
