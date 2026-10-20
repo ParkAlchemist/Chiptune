@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
     VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig, \
-    BandPowerLossConfig, SpectralFlatnessLossConfig
+    BandPowerLossConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -132,6 +132,20 @@ def build_spectral_flatness_loss_config(
     )
 
 
+def build_dc_offset_loss_config(
+    experiment: VocoderExperimentConfig,
+) -> DCOffsetLossConfig:
+    source = experiment.loss.dc_offset
+
+    return DCOffsetLossConfig(
+        enabled=source.enabled,
+        window_sizes=tuple(
+            source.window_sizes
+        ),
+        hop_ratio=source.hop_ratio,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -146,12 +160,14 @@ def build_loss_config(
         lambda_rms_envelope=source.lambda_rms_envelope,
         lambda_band_power=source.lambda_band_power,
         lambda_spectral_flatness=source.lambda_spectral_flatness,
+        lambda_dc_offset=source.lambda_dc_offset,
         mrstft=build_mrstft_config(experiment),
         temporal_gradient=build_temporal_gradient_config(experiment),
         feature_matching=build_feature_matching_config(experiment),
         rms_envelope=build_rms_envelope_loss_config(experiment),
         band_power=build_band_power_loss_config(experiment),
         spectral_flatness=build_spectral_flatness_loss_config(experiment),
+        dc_offset=build_dc_offset_loss_config(experiment),
     )
 
 

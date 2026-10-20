@@ -5,7 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from src.config.vocoder_config import MRSTFTConfig, VocoderDiscriminatorConfig, VocoderGeneratorModelConfig, \
-    TemporalGradientLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig, SpectralFlatnessLossConfig
+    TemporalGradientLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig, SpectralFlatnessLossConfig, \
+    DCOffsetLossConfig
 from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
@@ -16,7 +17,7 @@ from src.losses.vocoder_losses import (
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
     FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
     build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss, log_spectral_flatness,
-    SubBandSpectralFlatnessLoss, MultiScaleSlewEnvelopeLoss,
+    SubBandSpectralFlatnessLoss, MultiScaleSlewEnvelopeLoss, MultiScaleDCOffsetLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
@@ -465,6 +466,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.rms_envelope.weighted
         + output.band_power.weighted
         + output.spectral_flatness.weighted
+        + output.dc_offset.weighted
     )
 
     assert torch.allclose(
@@ -555,7 +557,7 @@ def test_generator_group_totals() -> None:
 
     assert torch.allclose(
         output.time_macro_total,
-        output.rms_envelope.weighted
+        output.rms_envelope.weighted + output.dc_offset.weighted,
     )
 
     assert torch.allclose(
@@ -2463,5 +2465,226 @@ def test_slew_envelope_penalty_grows_when_edge_moves_outside_local_region() -> N
     ).total
 
     assert near_loss < far_loss
+
+
+def test_dc_offset_loss_is_zero_for_exact_match() -> None:
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            window_sizes=(16, 64, 128),
+            hop_ratio=4,
+        )
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+def test_dc_offset_loss_detects_constant_offset() -> None:
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            window_sizes=(16, 64, 128),
+            hop_ratio=4,
+        )
+    )
+
+    target = torch.zeros(
+        2,
+        1,
+        512,
+    )
+
+    prediction = target + 0.25
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.local.item() == pytest.approx(
+        0.25,
+        abs=1e-6,
+    )
+
+    assert (
+        output.global_mean.item()
+        == pytest.approx(
+            0.25,
+            abs=1e-6,
+        )
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.25,
+        abs=1e-6,
+    )
+
+
+def test_dc_offset_loss_detects_local_offsets_that_cancel_globally() -> None:
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            window_sizes=(32, 64),
+            hop_ratio=4,
+        )
+    )
+
+    target = torch.zeros(
+        1,
+        1,
+        512,
+    )
+
+    prediction = torch.zeros_like(
+        target
+    )
+
+    prediction[..., :256] = 0.25
+    prediction[..., 256:] = -0.25
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert (
+        output.global_mean.item()
+        == pytest.approx(
+            0.0,
+            abs=1e-7,
+        )
+    )
+
+    assert output.local.item() > 0.0
+    assert output.total.item() > 0.0
+
+
+def test_dc_offset_loss_matches_target_mean_instead_of_zero() -> None:
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            window_sizes=(32, 64),
+            hop_ratio=4,
+        )
+    )
+
+    target = torch.full(
+        (1, 1, 512),
+        0.2,
+    )
+
+    matching = target.clone()
+
+    zero_centered = torch.zeros_like(
+        target
+    )
+
+    matching_loss = loss_function(
+        matching,
+        target,
+    ).total
+
+    zero_loss = loss_function(
+        zero_centered,
+        target,
+    ).total
+
+    assert matching_loss.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    assert zero_loss.item() > 0.0
+
+
+def test_dc_offset_loss_is_phase_relaxed_for_zero_mean_periodic_signal() -> None:
+    time = torch.arange(
+        1024,
+        dtype=torch.float32,
+    )
+
+    target = torch.sin(
+        2.0
+        * torch.pi
+        * time
+        / 32.0
+    ).reshape(1, 1, -1)
+
+    prediction = torch.roll(
+        target,
+        shifts=8,
+        dims=-1,
+    )
+
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            # Integer multiples of the period.
+            window_sizes=(32, 64, 128),
+            hop_ratio=4,
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-5,
+    )
+
+
+def test_dc_offset_loss_backpropagates() -> None:
+    loss_function = MultiScaleDCOffsetLoss(
+        DCOffsetLossConfig(
+            enabled=True,
+            window_sizes=(16, 64),
+            hop_ratio=4,
+        )
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        512,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        512,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
 
 

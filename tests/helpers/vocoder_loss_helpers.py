@@ -19,7 +19,7 @@ from src.losses.vocoder_losses import (
     FamilyDiscriminatorLossOutput, FamilyLossOutput, MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput,
     RMSEnvelopeScaleLossOutput, MultiResolutionBandPowerLossOutput, SubBandSpectralFlatnessLossOutput,
     SubBandSpectralFlatnessLoss, SpectralFlatnessBandLossOutput, MultiScaleTemporalGradientLoss,
-    MultiScaleSlewEnvelopeLossOutput,
+    MultiScaleSlewEnvelopeLossOutput, MultiScaleDCOffsetLossOutput, DCOffsetScaleLossOutput,
 )
 
 
@@ -278,6 +278,51 @@ def make_test_spectral_flatness_loss(
     )
 
 
+def make_test_dc_offset_output(
+    *,
+    device: torch.device | str = "cpu",
+) -> MultiScaleDCOffsetLossOutput:
+    scales = (
+        DCOffsetScaleLossOutput(
+            window_size=16,
+            hop_size=4,
+            loss=scalar_tensor(
+                0.1,
+                device=device,
+            ),
+        ),
+        DCOffsetScaleLossOutput(
+            window_size=64,
+            hop_size=16,
+            loss=scalar_tensor(
+                0.2,
+                device=device,
+            ),
+        ),
+    )
+    local = torch.stack(
+        [
+            scale.loss
+            for scale in scales
+        ]
+    ).mean()
+
+    global_mean = scalar_tensor(
+        0.05,
+        device=device,
+    )
+
+    total = 0.5 * (
+        local + global_mean
+    )
+    return MultiScaleDCOffsetLossOutput(
+        total=total,
+        local=local,
+        global_mean=global_mean,
+        scales=scales,
+    )
+
+
 def make_test_weighted_component(
     *,
     raw: float,
@@ -332,6 +377,12 @@ def make_test_generator_loss_output(
         SubBandSpectralFlatnessLossOutput
         | None
     ) = None,
+    dc_offset_raw: float = 0.05,
+    dc_offset_weight: float = 0.01,
+    dc_offset_output: (
+        MultiScaleDCOffsetLossOutput
+        | None
+    ) = None,
     device: torch.device | str = "cpu",
 ) -> VocoderGeneratorLossOutput:
     adversarial = make_test_weighted_component(
@@ -384,6 +435,12 @@ def make_test_generator_loss_output(
         )
     )
 
+    dc_offset = make_test_weighted_component(
+        raw=dc_offset_raw,
+        weight=dc_offset_weight,
+        device=device,
+    )
+
     if adversarial_families is None:
         adversarial_families = {
             "mpd": scalar_tensor(
@@ -414,6 +471,7 @@ def make_test_generator_loss_output(
         + rms_envelope.weighted
         + band_power.weighted
         + spectral_flatness.weighted
+        + dc_offset.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -430,6 +488,7 @@ def make_test_generator_loss_output(
         rms_envelope=rms_envelope,
         band_power=band_power,
         spectral_flatness=spectral_flatness,
+        dc_offset=dc_offset,
         adversarial_families=(
             adversarial_families
         ),
@@ -441,6 +500,7 @@ def make_test_generator_loss_output(
         rms_envelope_output=rms_envelope_output,
         band_power_output=band_power_output,
         spectral_flatness_output=spectral_flatness_output,
+        dc_offset_output=dc_offset_output,
     )
 
 

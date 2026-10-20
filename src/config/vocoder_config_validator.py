@@ -10,7 +10,7 @@ from src.config.vocoder_config import (
     MRSTFTConfig,
     OptimizerConfig,
     SchedulerConfig,
-    VocoderExperimentConfig, SpectralFlatnessLossConfig,
+    VocoderExperimentConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig,
 )
 
 
@@ -875,6 +875,43 @@ def _validate_spectral_flatness_config(
         )
 
 
+def _validate_dc_offset_config(
+    config: DCOffsetLossConfig,
+    *,
+    errors: list[str],
+) -> None:
+    path = "loss.dc_offset"
+
+    if not config.window_sizes:
+        errors.append(
+            f"{path}.window_sizes must contain "
+            "at least one value."
+        )
+
+    if any(
+        window_size <= 0
+        for window_size
+        in config.window_sizes
+    ):
+        errors.append(
+            f"{path}.window_sizes must contain "
+            "only positive values."
+        )
+
+    if len(
+        set(config.window_sizes)
+    ) != len(config.window_sizes):
+        errors.append(
+            f"{path}.window_sizes must contain "
+            "unique values."
+        )
+
+    if config.hop_ratio <= 0:
+        errors.append(
+            f"{path}.hop_ratio must be positive."
+        )
+
+
 def _validate_loss_config(
     config: VocoderExperimentConfig,
     errors: list[str],
@@ -891,7 +928,8 @@ def _validate_loss_config(
         "loss.lambda_temporal_gradient": loss.lambda_temporal_gradient,
         "loss.lambda_rms_envelope": loss.lambda_rms_envelope,
         "loss.lambda_band_power": loss.lambda_band_power,
-        "loss.spectral_flatness": loss.lambda_spectral_flatness,
+        "loss.lambda_spectral_flatness": loss.lambda_spectral_flatness,
+        "loss.lambda_dc_offset": loss.lambda_dc_offset,
     }
 
     for path, value in weights.items():
@@ -1181,6 +1219,21 @@ def _validate_loss_config(
     _validate_spectral_flatness_config(
         spectral_flatness,
         sample_rate=config.data.sample_rate,
+        errors=errors,
+    )
+
+    if (
+            not loss.dc_offset.enabled
+            and loss.lambda_dc_offset != 0.0
+    ):
+        errors.append(
+            "loss.lambda_dc_offset must be zero "
+            "when loss.dc_offset.enabled is false."
+        )
+
+    dc_offset = loss.dc_offset
+    _validate_dc_offset_config(
+        dc_offset,
         errors=errors,
     )
 

@@ -206,6 +206,19 @@ class SpectralFlatnessLossConfig:
 
 
 @dataclass
+class DCOffsetLossConfig:
+    enabled: bool = False
+
+    window_sizes: tuple[int, ...] = (
+        1024,
+        4096,
+        16384,
+    )
+
+    hop_ratio: int = 4
+
+
+@dataclass
 class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
@@ -215,6 +228,7 @@ class VocoderLossConfig:
     lambda_rms_envelope: float = 0.0
     lambda_band_power: float = 0.0
     lambda_spectral_flatness: float = 0.0
+    lambda_dc_offset: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
@@ -222,6 +236,7 @@ class VocoderLossConfig:
     rms_envelope: RMSEnvelopeLossConfig = field(default_factory=RMSEnvelopeLossConfig)
     band_power: BandPowerLossConfig = field(default_factory=BandPowerLossConfig)
     spectral_flatness: SpectralFlatnessLossConfig = field(default_factory=SpectralFlatnessLossConfig)
+    dc_offset: DCOffsetLossConfig = field(default_factory=DCOffsetLossConfig)
 
 
 @dataclass
