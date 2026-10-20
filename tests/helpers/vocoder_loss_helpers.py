@@ -8,7 +8,7 @@ from src.config.vocoder_config import (
     FeatureMatchingLossConfig,
     MRSTFTConfig,
     TemporalGradientLossConfig,
-    VocoderLossConfig,
+    VocoderLossConfig, SpectralFlatnessLossConfig,
 )
 from src.losses.vocoder_losses import (
     MultiResolutionSTFTLossOutput,
@@ -17,7 +17,8 @@ from src.losses.vocoder_losses import (
     WeightedLossComponent,
     make_weighted_loss_component, family_balanced_generator_adversarial_loss, family_balanced_feature_matching_loss,
     FamilyDiscriminatorLossOutput, FamilyLossOutput, MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput,
-    RMSEnvelopeScaleLossOutput, MultiResolutionBandPowerLossOutput,
+    RMSEnvelopeScaleLossOutput, MultiResolutionBandPowerLossOutput, SubBandSpectralFlatnessLossOutput,
+    SubBandSpectralFlatnessLoss, SpectralFlatnessBandLossOutput,
 )
 
 
@@ -216,6 +217,66 @@ def make_zero_mrstft_output(
     )
 
 
+def make_test_spectral_flatness_loss(
+    *,
+    sample_rate: int = 8_000,
+    fft_size: int = 128,
+    hop_size: int = 32,
+    win_length: int = 128,
+    band_edges: tuple[float, ...] = (
+        0.0,
+        500.0,
+        2_000.0,
+        4_000.0,
+    ),
+    energy_floor: float = 1e-4,
+    minimum_bins_per_band: int = 4,
+    eps: float = 1e-8,
+    device: torch.device | str = "cpu",
+) -> SubBandSpectralFlatnessLoss:
+    """
+    Construct a small spectral-flatness loss for unit tests.
+
+    The default setup uses an 8 kHz sample rate and FFT size 128,
+    giving a frequency-bin spacing of 62.5 Hz.
+
+    Default band bin counts:
+        0–500 Hz:
+            8 bins with the half-open interval convention
+
+        500–2000 Hz:
+            24 bins
+
+        2000–4000 Hz:
+            33 bins because the final band includes Nyquist
+
+    Every band therefore exceeds the default minimum of four bins.
+    """
+    config = SpectralFlatnessLossConfig(
+        enabled=True,
+        fft_size=fft_size,
+        hop_size=hop_size,
+        win_length=win_length,
+        band_edges=band_edges,
+        energy_floor=energy_floor,
+        minimum_bins_per_band=(
+            minimum_bins_per_band
+        ),
+        eps=eps,
+    )
+
+    loss_function = (
+        SubBandSpectralFlatnessLoss(
+            sample_rate=sample_rate,
+            config=config,
+        )
+    )
+
+    return loss_function.to(
+        torch.device(device)
+    )
+
+
 def make_test_weighted_component(
     *,
     raw: float,
@@ -231,7 +292,6 @@ def make_test_weighted_component(
         raw=raw_tensor,
         weight=weight,
     )
-
 
 
 def make_test_generator_loss_output(
@@ -262,6 +322,12 @@ def make_test_generator_loss_output(
     ) = None,
     mrstft_output: (
         MultiResolutionSTFTLossOutput
+        | None
+    ) = None,
+    spectral_flatness_raw: float = 0.5,
+    spectral_flatness_weight: float = 0.1,
+    spectral_flatness_output: (
+        SubBandSpectralFlatnessLossOutput
         | None
     ) = None,
     device: torch.device | str = "cpu",
@@ -308,6 +374,14 @@ def make_test_generator_loss_output(
         device=device,
     )
 
+    spectral_flatness = (
+        make_test_weighted_component(
+            raw=spectral_flatness_raw,
+            weight=spectral_flatness_weight,
+            device=device,
+        )
+    )
+
     if adversarial_families is None:
         adversarial_families = {
             "mpd": scalar_tensor(
@@ -337,6 +411,7 @@ def make_test_generator_loss_output(
         + temporal_gradient.weighted
         + rms_envelope.weighted
         + band_power.weighted
+        + spectral_flatness.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -352,6 +427,7 @@ def make_test_generator_loss_output(
         ),
         rms_envelope=rms_envelope,
         band_power=band_power,
+        spectral_flatness=spectral_flatness,
         adversarial_families=(
             adversarial_families
         ),
@@ -361,6 +437,7 @@ def make_test_generator_loss_output(
         mrstft_output=mrstft_output,
         rms_envelope_output=rms_envelope_output,
         band_power_output=band_power_output,
+        spectral_flatness_output=spectral_flatness_output,
     )
 
 

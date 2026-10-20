@@ -8,7 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig
+from src.config.vocoder_config import MRSTFTConfig, VocoderLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig, \
+    SpectralFlatnessLossConfig
 
 DISCRIMINATOR_FAMILIES: tuple[str, ...] = (
     "mpd",
@@ -116,6 +117,29 @@ class MultiResolutionBandPowerLossOutput:
 
 
 @dataclass(frozen=True)
+class SpectralFlatnessBandLossOutput:
+    lower_frequency: float
+    upper_frequency: float
+
+    loss: torch.Tensor
+
+    target_log_flatness: torch.Tensor
+    prediction_log_flatness: torch.Tensor
+
+    activity_fraction: torch.Tensor
+
+
+@dataclass(frozen=True)
+class SubBandSpectralFlatnessLossOutput:
+    total: torch.Tensor
+
+    bands: tuple[
+        SpectralFlatnessBandLossOutput,
+        ...,
+    ]
+
+
+@dataclass(frozen=True)
 class FamilyLossOutput:
     total: torch.Tensor
     families: dict[str, torch.Tensor]
@@ -143,10 +167,12 @@ class VocoderGeneratorLossOutput:
     temporal_gradient: WeightedLossComponent
     rms_envelope: WeightedLossComponent
     band_power: WeightedLossComponent
+    spectral_flatness: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
     rms_envelope_output: MultiScaleRMSEnvelopeLossOutput | None
     band_power_output: MultiResolutionBandPowerLossOutput | None
+    spectral_flatness_output: SubBandSpectralFlatnessLossOutput | None
 
     adversarial_families: dict[str, torch.Tensor]
     feature_matching_families: dict[str, torch.Tensor]
@@ -169,7 +195,7 @@ class VocoderGeneratorLossOutput:
 
     @property
     def spectral_macro_total(self) -> torch.Tensor:
-        return self.band_power.weighted
+        return self.band_power.weighted + self.spectral_flatness.weighted
 
 
 @dataclass
@@ -495,7 +521,11 @@ class VocoderLossBundle(nn.Module):
         self.band_power_loss = MultiResolutionBandPowerLoss(
             sample_rate=sample_rate,
             config=config.band_power,
-        )
+        ) if config.band_power.enabled else None
+        self.spectral_flatness_loss = SubBandSpectralFlatnessLoss(
+            sample_rate=sample_rate,
+            config=config.spectral_flatness,
+        ) if config.spectral_flatness.enabled else None
 
 
 def lsgan_discriminator_loss(
@@ -651,6 +681,10 @@ def feature_matching_loss(
                 layer_loss = difference
             elif normalization == "real_magnitude":
                 reference_scale = real_reference.abs().mean().clamp_min(max(scale_floor, eps))
+                layer_loss = difference / reference_scale
+            elif normalization == "real_rms":
+                reference_rms = torch.sqrt(real_reference.float().square().mean() + eps)
+                reference_scale = reference_rms.clamp_min(scale_floor)
                 layer_loss = difference / reference_scale
             else:
                 raise ValueError(
@@ -1410,6 +1444,410 @@ class MultiResolutionBandPowerLoss(
         )
 
 
+def log_spectral_flatness(
+    power: torch.Tensor,
+    *,
+    frequency_dim: int,
+    eps: float,
+) -> torch.Tensor:
+    """
+    Calculate log spectral flatness.
+
+    Input power is expected to be non-negative.
+
+    A value near zero indicates a flat spectrum.
+    More negative values indicate increasingly
+    concentrated or tonal spectra.
+    """
+    if eps <= 0.0:
+        raise ValueError(
+            f"eps must be positive, got {eps}."
+        )
+
+    if torch.any(power < 0.0):
+        raise ValueError(
+            "Spectral-flatness power must be "
+            "non-negative."
+        )
+
+    mean_log_power = torch.log(
+        power + eps
+    ).mean(
+        dim=frequency_dim,
+    )
+
+    log_mean_power = torch.log(
+        power.mean(
+            dim=frequency_dim,
+        )
+        + eps
+    )
+
+    return (
+        mean_log_power
+        - log_mean_power
+    )
+
+
+class SubBandSpectralFlatnessLoss(
+    nn.Module
+):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        config: SpectralFlatnessLossConfig,
+    ) -> None:
+        super().__init__()
+
+        if sample_rate <= 0:
+            raise ValueError(
+                "sample_rate must be positive."
+            )
+
+        if config.fft_size <= 0:
+            raise ValueError(
+                "fft_size must be positive."
+            )
+
+        if config.hop_size <= 0:
+            raise ValueError(
+                "hop_size must be positive."
+            )
+
+        if not (
+            0 < config.win_length
+            <= config.fft_size
+        ):
+            raise ValueError(
+                "Expected 0 < win_length "
+                "<= fft_size."
+            )
+
+        if len(config.band_edges) < 2:
+            raise ValueError(
+                "At least two band edges are "
+                "required."
+            )
+
+        if any(
+            right <= left
+            for left, right in zip(
+                config.band_edges,
+                config.band_edges[1:],
+            )
+        ):
+            raise ValueError(
+                "Band edges must be strictly "
+                "increasing."
+            )
+
+        if (
+            config.band_edges[-1]
+            > sample_rate / 2.0
+        ):
+            raise ValueError(
+                "Band edges must not exceed "
+                "Nyquist frequency."
+            )
+
+        if config.energy_floor <= 0.0:
+            raise ValueError(
+                "energy_floor must be positive."
+            )
+
+        if config.minimum_bins_per_band < 2:
+            raise ValueError(
+                "minimum_bins_per_band must be "
+                "at least two."
+            )
+
+        if config.eps <= 0.0:
+            raise ValueError(
+                "eps must be positive."
+            )
+
+        self.sample_rate = sample_rate
+        self.config = config
+
+        self.register_buffer(
+            "window",
+            torch.hann_window(
+                config.win_length,
+                dtype=torch.float32,
+            ),
+            persistent=False,
+        )
+
+        frequencies = torch.linspace(
+            0.0,
+            sample_rate / 2.0,
+            config.fft_size // 2 + 1,
+            dtype=torch.float32,
+        )
+
+        self.register_buffer(
+            "frequencies",
+            frequencies,
+            persistent=False,
+        )
+
+        band_bin_indices: list[
+            torch.Tensor
+        ] = []
+
+        last_band_index = (
+            len(config.band_edges) - 2
+        )
+
+        for band_index, (
+            lower,
+            upper,
+        ) in enumerate(
+            zip(
+                config.band_edges,
+                config.band_edges[1:],
+            )
+        ):
+            if band_index == last_band_index:
+                selected = (
+                    (frequencies >= lower)
+                    & (frequencies <= upper)
+                )
+            else:
+                selected = (
+                    (frequencies >= lower)
+                    & (frequencies < upper)
+                )
+
+            indices = torch.nonzero(
+                selected,
+                as_tuple=False,
+            ).flatten()
+
+            if (
+                indices.numel()
+                < config.minimum_bins_per_band
+            ):
+                raise ValueError(
+                    "Spectral-flatness band "
+                    f"[{lower}, {upper}] Hz contains "
+                    f"only {indices.numel()} FFT bins; "
+                    "increase fft_size, widen the band, "
+                    "or reduce minimum_bins_per_band."
+                )
+
+            band_bin_indices.append(indices)
+
+        # Plain Python tuple is appropriate because
+        # the frequency-bin indices are static metadata.
+        self.band_bin_indices = tuple(
+            band_bin_indices
+        )
+
+    def _power_spectrogram(
+        self,
+        waveform: torch.Tensor,
+    ) -> torch.Tensor:
+        if waveform.ndim != 3:
+            raise ValueError(
+                "Expected waveform [B,C,T], "
+                f"got {tuple(waveform.shape)}."
+            )
+
+        batch, channels, time = (
+            waveform.shape
+        )
+
+        flattened = waveform.reshape(
+            batch * channels,
+            time,
+        )
+
+        autocast_context = (
+            torch.amp.autocast(
+                device_type="cuda",
+                enabled=False,
+            )
+            if waveform.is_cuda
+            else nullcontext()
+        )
+
+        with autocast_context:
+            flattened = flattened.float()
+
+            window = self.window.to(
+                device=flattened.device,
+                dtype=torch.float32,
+            )
+
+            spectrum = torch.stft(
+                flattened,
+                n_fft=self.config.fft_size,
+                hop_length=(
+                    self.config.hop_size
+                ),
+                win_length=(
+                    self.config.win_length
+                ),
+                window=window,
+                center=True,
+                return_complex=True,
+            )
+
+            power = spectrum.abs().square()
+
+        return power.reshape(
+            batch,
+            channels,
+            power.shape[-2],
+            power.shape[-1],
+        )
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> SubBandSpectralFlatnessLossOutput:
+        if prediction.shape != target.shape:
+            raise ValueError(
+                "Prediction and target waveform "
+                "shapes differ: "
+                f"{tuple(prediction.shape)} versus "
+                f"{tuple(target.shape)}."
+            )
+
+        prediction_power = (
+            self._power_spectrogram(
+                prediction
+            )
+        )
+
+        target_power = (
+            self._power_spectrogram(
+                target
+            )
+        )
+
+        band_outputs: list[
+            SpectralFlatnessBandLossOutput
+        ] = []
+
+        for band_index, indices in enumerate(
+            self.band_bin_indices
+        ):
+            indices = indices.to(
+                device=prediction_power.device
+            )
+
+            prediction_band = torch.index_select(
+                prediction_power,
+                dim=-2,
+                index=indices,
+            )
+
+            target_band = torch.index_select(
+                target_power,
+                dim=-2,
+                index=indices,
+            )
+
+            prediction_flatness = (
+                log_spectral_flatness(
+                    prediction_band,
+                    frequency_dim=-2,
+                    eps=self.config.eps,
+                )
+            )
+
+            target_flatness = (
+                log_spectral_flatness(
+                    target_band,
+                    frequency_dim=-2,
+                    eps=self.config.eps,
+                )
+            )
+
+            target_band_energy = (
+                target_band.mean(
+                    dim=-2,
+                )
+            )
+
+            # Smooth target-derived activity gate.
+            # Detaching prevents the gate from becoming
+            # part of the optimization target.
+            activity_weight = (
+                target_band_energy.detach()
+                / (
+                    target_band_energy.detach()
+                    + self.config.energy_floor
+                )
+            )
+
+            absolute_error = (
+                prediction_flatness
+                - target_flatness.detach()
+            ).abs()
+
+            band_loss = (
+                absolute_error
+                * activity_weight
+            ).sum() / (
+                activity_weight.sum()
+                .clamp_min(self.config.eps)
+            )
+
+            lower = (
+                self.config.band_edges[
+                    band_index
+                ]
+            )
+
+            upper = (
+                self.config.band_edges[
+                    band_index + 1
+                ]
+            )
+
+            band_outputs.append(
+                SpectralFlatnessBandLossOutput(
+                    lower_frequency=lower,
+                    upper_frequency=upper,
+                    loss=band_loss,
+                    target_log_flatness=(
+                        target_flatness
+                        .detach()
+                        .mean()
+                    ),
+                    prediction_log_flatness=(
+                        prediction_flatness
+                        .detach()
+                        .mean()
+                    ),
+                    activity_fraction=(
+                        activity_weight
+                        .detach()
+                        .mean()
+                    ),
+                )
+            )
+
+        total = torch.stack(
+            [
+                band.loss
+                for band in band_outputs
+            ]
+        ).mean()
+
+        return (
+            SubBandSpectralFlatnessLossOutput(
+                total=total,
+                bands=tuple(band_outputs),
+            )
+        )
+
+
 def generator_family_adversarial_losses(
     discriminator_outputs: dict[str, list],
 ) -> dict[str, torch.Tensor]:
@@ -1609,6 +2047,18 @@ def compute_vocoder_generator_loss(
 
         loss_band_power_raw = band_power_output.total
 
+    if loss_bundle.spectral_flatness_loss is None:
+        spectral_flatness_output = None
+
+        loss_spectral_flatness_raw = fake_audio.new_zeros(())
+    else:
+        spectral_flatness_output = loss_bundle.spectral_flatness_loss(
+            fake_audio,
+            real_audio,
+        )
+
+        loss_spectral_flatness_raw = spectral_flatness_output.total
+
     #------------------Weighted losses-------------------
 
     adversarial = make_weighted_loss_component(
@@ -1646,6 +2096,11 @@ def compute_vocoder_generator_loss(
         weight=cfg.lambda_band_power,
     )
 
+    spectral_flatness = make_weighted_loss_component(
+        raw=loss_spectral_flatness_raw,
+        weight=cfg.lambda_spectral_flatness,
+    )
+
     total = (
         adversarial.weighted
         + feature_matching.weighted
@@ -1654,6 +2109,7 @@ def compute_vocoder_generator_loss(
         + temporal_gradient.weighted
         + rms_envelope.weighted
         + band_power.weighted
+        + spectral_flatness.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -1665,11 +2121,13 @@ def compute_vocoder_generator_loss(
         temporal_gradient=temporal_gradient,
         rms_envelope=rms_envelope,
         band_power=band_power,
+        spectral_flatness=spectral_flatness,
         mrstft_output=mrstft_output,
         rms_envelope_output=rms_envelope_output,
         band_power_output=band_power_output,
         adversarial_families=adversarial_output.families,
         feature_matching_families=feature_matching_output.families,
+        spectral_flatness_output=spectral_flatness_output,
     )
 
 
@@ -1755,6 +2213,9 @@ def generator_loss_metrics(
         "loss_g_band_power": float(
             output.band_power.raw.detach().cpu()
         ),
+        "loss_g_spectral_flatness": float(
+            output.spectral_flatness.raw.detach().cpu()
+        ),
 
         "loss_g_weighted/adversarial": float(
             output.adversarial.weighted.detach().cpu()
@@ -1776,6 +2237,9 @@ def generator_loss_metrics(
         ),
         "loss_g_weighted/band_power": float(
             output.band_power.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/spectral_flatness": float(
+            output.spectral_flatness.weighted.detach().cpu()
         ),
 
         "loss_g_group/learned": float(
@@ -1908,6 +2372,49 @@ def generator_loss_metrics(
                 resolution.total.detach().cpu()
             )
 
+    if output.spectral_flatness_output is not None:
+        for band_index, band in enumerate(
+                output
+                        .spectral_flatness_output
+                        .bands
+        ):
+            prefix = (
+                "loss_g_spectral_flatness_band/"
+                f"band_{band_index}"
+                f"_{band.lower_frequency:g}"
+                f"_{band.upper_frequency:g}"
+            )
+
+            metrics[
+                f"{prefix}/loss"
+            ] = float(
+                band.loss.detach().cpu()
+            )
+
+            metrics[
+                f"{prefix}/target_log_flatness"
+            ] = float(
+                band.target_log_flatness
+                .detach()
+                .cpu()
+            )
+
+            metrics[
+                f"{prefix}/prediction_log_flatness"
+            ] = float(
+                band.prediction_log_flatness
+                .detach()
+                .cpu()
+            )
+
+            metrics[
+                f"{prefix}/activity"
+            ] = float(
+                band.activity_fraction
+                .detach()
+                .cpu()
+            )
+
     return metrics
 
 
@@ -1978,7 +2485,10 @@ def generator_loss_contribution_metrics(
         ),
         "band_power": (
             output.band_power.weighted
-        )
+        ),
+        "spectral_flatness": (
+            output.spectral_flatness.weighted
+        ),
     }
 
     denominator = torch.stack(

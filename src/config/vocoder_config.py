@@ -9,7 +9,7 @@ ActivationType = Literal["leaky_relu", "snake_beta"]
 SchedulerName = Literal["none", "exponential", "cosine"]
 SchedulerInterval = Literal["epoch", "optimizer_step"]
 ContextBlockType = Literal["convnext", "multi_kernel_convnext"]
-FeatureMatchingNormalization = Literal["layer_mean", "real_magnitude"]
+FeatureMatchingNormalization = Literal["layer_mean", "real_magnitude", "real_rms"]
 
 
 @dataclass
@@ -171,6 +171,27 @@ class BandPowerLossConfig:
 
 
 @dataclass
+class SpectralFlatnessLossConfig:
+    enabled: bool = False
+
+    fft_size: int = 1024
+    hop_size: int = 256
+    win_length: int = 1024
+
+    band_edges: tuple[float, ...] = (
+        27.5,
+        250.0,
+        1000.0,
+        4000.0,
+        11025.0,
+    )
+
+    energy_floor: float = 1e-4
+    minimum_bins_per_band: int = 4
+    eps: float = 1e-8
+
+
+@dataclass
 class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
@@ -179,12 +200,14 @@ class VocoderLossConfig:
     lambda_temporal_gradient: float = 0.1
     lambda_rms_envelope: float = 0.0
     lambda_band_power: float = 0.0
+    lambda_spectral_flatness: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
     temporal_gradient: TemporalGradientLossConfig = field(default_factory=TemporalGradientLossConfig)
     rms_envelope: RMSEnvelopeLossConfig = field(default_factory=RMSEnvelopeLossConfig)
     band_power: BandPowerLossConfig = field(default_factory=BandPowerLossConfig)
+    spectral_flatness: SpectralFlatnessLossConfig = field(default_factory=SpectralFlatnessLossConfig)
 
 
 @dataclass

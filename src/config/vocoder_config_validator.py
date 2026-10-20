@@ -10,7 +10,7 @@ from src.config.vocoder_config import (
     MRSTFTConfig,
     OptimizerConfig,
     SchedulerConfig,
-    VocoderExperimentConfig,
+    VocoderExperimentConfig, SpectralFlatnessLossConfig,
 )
 
 
@@ -790,6 +790,91 @@ def _validate_mrstft_config(
         )
 
 
+def _validate_spectral_flatness_config(
+    config: SpectralFlatnessLossConfig,
+    *,
+    sample_rate: int,
+    errors: list[str],
+) -> None:
+    path = "loss.spectral_flatness"
+
+    if config.fft_size <= 0:
+        errors.append(
+            f"{path}.fft_size must be positive."
+        )
+
+    if config.hop_size <= 0:
+        errors.append(
+            f"{path}.hop_size must be positive."
+        )
+
+    if config.win_length <= 0:
+        errors.append(
+            f"{path}.win_length must be positive."
+        )
+
+    if config.win_length > config.fft_size:
+        errors.append(
+            f"{path}.win_length must not exceed "
+            "fft_size."
+        )
+
+    if len(config.band_edges) < 2:
+        errors.append(
+            f"{path}.band_edges must contain "
+            "at least two values."
+        )
+
+    if any(
+        edge < 0.0
+        for edge in config.band_edges
+    ):
+        errors.append(
+            f"{path}.band_edges must be "
+            "non-negative."
+        )
+
+    if any(
+        right <= left
+        for left, right in zip(
+            config.band_edges,
+            config.band_edges[1:],
+        )
+    ):
+        errors.append(
+            f"{path}.band_edges must be "
+            "strictly increasing."
+        )
+
+    if (
+        config.band_edges
+        and config.band_edges[-1]
+        > sample_rate / 2.0
+    ):
+        errors.append(
+            f"{path}.band_edges must not exceed "
+            f"Nyquist frequency "
+            f"{sample_rate / 2.0}."
+        )
+
+    if config.energy_floor <= 0.0:
+        errors.append(
+            f"{path}.energy_floor must be "
+            "positive."
+        )
+
+    if config.minimum_bins_per_band < 2:
+        errors.append(
+            f"{path}.minimum_bins_per_band must "
+            "be at least two."
+        )
+
+    if config.eps <= 0.0:
+        errors.append(
+            f"{path}.eps must be positive."
+        )
+
+
 def _validate_loss_config(
     config: VocoderExperimentConfig,
     errors: list[str],
@@ -806,6 +891,7 @@ def _validate_loss_config(
         "loss.lambda_temporal_gradient": loss.lambda_temporal_gradient,
         "loss.lambda_rms_envelope": loss.lambda_rms_envelope,
         "loss.lambda_band_power": loss.lambda_band_power,
+        "loss.spectral_flatness": loss.lambda_spectral_flatness,
     }
 
     for path, value in weights.items():
@@ -823,10 +909,10 @@ def _validate_loss_config(
 
     feature_matching = loss.feature_matching
 
-    if feature_matching.normalization not in {"layer_mean", "real_magnitude"}:
+    if feature_matching.normalization not in {"layer_mean", "real_magnitude", "real_rms"}:
         errors.append(
             f"{feature_matching.normalization} must be one of "
-            "layer_norm, real_magnitude."
+            "layer_norm, real_magnitude, real_rms."
         )
 
     if feature_matching.scale_floor <= 0.0:
@@ -1008,6 +1094,23 @@ def _validate_loss_config(
                 f"band_power.eps must be positive, "
                 f"got {band_power.eps}."
             )
+
+    if (
+            not loss.spectral_flatness.enabled
+            and loss.lambda_spectral_flatness != 0.0
+    ):
+        errors.append(
+            "loss.lambda_spectral_flatness must be "
+            "zero when spectral-flatness loss is "
+            "disabled."
+        )
+
+    spectral_flatness = loss.spectral_flatness
+    _validate_spectral_flatness_config(
+        spectral_flatness,
+        sample_rate=config.data.sample_rate,
+        errors=errors,
+    )
 
 
 def _validate_optimizer_config(

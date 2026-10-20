@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from src.config.vocoder_config import MRSTFTConfig, VocoderDiscriminatorConfig, VocoderGeneratorModelConfig, \
-    TemporalGradientLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig
+    TemporalGradientLossConfig, RMSEnvelopeLossConfig, BandPowerLossConfig, SpectralFlatnessLossConfig
 from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
@@ -15,11 +15,12 @@ from src.losses.vocoder_losses import (
     generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
     family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
     FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
-    build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss,
+    build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss, log_spectral_flatness,
+    SubBandSpectralFlatnessLoss,
 )
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
-    assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent
+    assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent, make_test_spectral_flatness_loss
 
 
 def test_mrstft_loss_finite():
@@ -91,6 +92,44 @@ def test_feature_matching_normalizes_real_scale() -> None:
     loss = feature_matching_loss(real_maps, fake_maps, normalization="real_magnitude", scale_floor=0.01)
 
     assert loss.item() == pytest.approx(0.5)
+
+
+def test_feature_matching_normalizes_by_real_rms() -> None:
+    real_maps = [
+        [
+            torch.tensor([[[0.0, 2.0]]])
+        ]
+    ]
+    fake_maps = [
+        [
+            torch.tensor([[[1.0, 3.0]]])
+        ]
+    ]
+
+    loss = feature_matching_loss(
+        real_maps,
+        fake_maps,
+        normalization="real_rms",
+        scale_floor=0.01,
+        eps=1e-8,
+    )
+
+    assert loss.item() == pytest.approx(1.0 / math.sqrt(2.0))
+
+
+def test_feature_matching_real_rms_uses_scale_floor() -> None:
+    real_maps = [[torch.zeros(1, 1, 8)]]
+    fake_maps = [[torch.ones(1, 1, 8)]]
+
+    loss = feature_matching_loss(
+        real_maps,
+        fake_maps,
+        normalization="real_rms",
+        scale_floor=0.25,
+        eps=1e-8,
+    )
+
+    assert loss.item() == pytest.approx(4.0)
 
 
 def test_temporal_gradient_zero_for_exact_match() -> None:
@@ -425,6 +464,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.temporal_gradient.weighted
         + output.rms_envelope.weighted
         + output.band_power.weighted
+        + output.spectral_flatness.weighted
     )
 
     assert torch.allclose(
@@ -445,6 +485,7 @@ def test_generator_weighted_components_use_configured_lambdas() -> None:
         temporal_gradient_weight=0.1,
         rms_envelope_weight=0.1,
         band_power_weight=0.1,
+        spectral_flatness_weight=0.1,
     )
 
     assert torch.allclose(
@@ -482,6 +523,11 @@ def test_generator_weighted_components_use_configured_lambdas() -> None:
         0.1 * output.band_power.raw,
     )
 
+    assert torch.allclose(
+        output.spectral_flatness.weighted,
+        0.1 * output.spectral_flatness.raw,
+    )
+
 
 def test_generator_group_totals() -> None:
     output = make_test_generator_loss_output()
@@ -514,7 +560,7 @@ def test_generator_group_totals() -> None:
 
     assert torch.allclose(
         output.spectral_macro_total,
-        output.band_power.weighted,
+        output.band_power.weighted + output.spectral_flatness.weighted,
     )
 
 
@@ -1795,5 +1841,291 @@ def test_silent_example_does_not_dominate_active_example() -> None:
         atol=1e-6,
         rtol=1e-5,
     )
+
+
+def test_log_spectral_flatness_is_zero_for_flat_power() -> None:
+    power = torch.ones(
+        2,
+        1,
+        16,
+        8,
+    )
+
+    flatness = log_spectral_flatness(
+        power,
+        frequency_dim=-2,
+        eps=1e-8,
+    )
+
+    assert torch.allclose(
+        flatness,
+        torch.zeros_like(flatness),
+        atol=1e-7,
+    )
+
+
+def test_log_spectral_flatness_detects_tonal_power() -> None:
+    flat = torch.ones(
+        1,
+        1,
+        16,
+        1,
+    )
+
+    tonal = torch.full_like(
+        flat,
+        1e-4,
+    )
+
+    tonal[..., 4, :] = 1.0
+
+    flat_value = log_spectral_flatness(
+        flat,
+        frequency_dim=-2,
+        eps=1e-8,
+    )
+
+    tonal_value = log_spectral_flatness(
+        tonal,
+        frequency_dim=-2,
+        eps=1e-8,
+    )
+
+    assert torch.all(
+        tonal_value < flat_value
+    )
+
+
+def test_spectral_flatness_loss_is_zero_for_exact_match() -> None:
+    loss_function = (
+        SubBandSpectralFlatnessLoss(
+            sample_rate=8000,
+            config=(
+                SpectralFlatnessLossConfig(
+                    enabled=True,
+                    fft_size=128,
+                    hop_size=32,
+                    win_length=128,
+                    band_edges=(
+                        0.0,
+                        500.0,
+                        2000.0,
+                        4000.0,
+                    ),
+                    energy_floor=1e-4,
+                    minimum_bins_per_band=4,
+                    eps=1e-8,
+                )
+            ),
+        )
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        1024,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+
+def test_spectral_flatness_distinguishes_tone_and_noise() -> None:
+    sample_rate = 8000
+    length = 2048
+
+    time = torch.arange(
+        length,
+        dtype=torch.float32,
+    ) / sample_rate
+
+    tone = torch.sin(
+        2.0
+        * torch.pi
+        * 1000.0
+        * time
+    ).reshape(1, 1, -1)
+
+    generator = torch.Generator()
+    generator.manual_seed(1337)
+
+    noise = torch.randn(
+        1,
+        1,
+        length,
+        generator=generator,
+    )
+
+    noise = noise / noise.square().mean().sqrt()
+
+    loss_function = (
+        SubBandSpectralFlatnessLoss(
+            sample_rate=sample_rate,
+            config=(
+                SpectralFlatnessLossConfig(
+                    enabled=True,
+                    fft_size=256,
+                    hop_size=64,
+                    win_length=256,
+                    band_edges=(
+                        0.0,
+                        500.0,
+                        2000.0,
+                        4000.0,
+                    ),
+                    energy_floor=1e-4,
+                    minimum_bins_per_band=4,
+                    eps=1e-8,
+                )
+            ),
+        )
+    )
+
+    output = loss_function(
+        tone,
+        noise,
+    )
+
+    assert output.total.item() > 0.0
+
+
+def test_spectral_flatness_is_scale_invariant_for_active_audio() -> None:
+    loss_function = (
+        make_test_spectral_flatness_loss()
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        2048,
+    )
+
+    prediction = torch.roll(
+        target,
+        shifts=3,
+        dims=-1,
+    )
+
+    first = loss_function(
+        prediction,
+        target,
+    ).total
+
+    second = loss_function(
+        0.5 * prediction,
+        0.5 * target,
+    ).total
+
+    assert torch.allclose(
+        first,
+        second,
+        atol=1e-3,
+        rtol=1e-3,
+    )
+
+
+
+def test_spectral_flatness_loss_handles_silence() -> None:
+    loss_function = (
+        make_test_spectral_flatness_loss()
+    )
+
+    target = torch.zeros(
+        2,
+        1,
+        2048,
+    )
+
+    prediction = torch.randn_like(
+        target
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert torch.isfinite(output.total)
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    for band in output.bands:
+        assert (
+            band.activity_fraction.item()
+            == pytest.approx(
+                0.0,
+                abs=1e-7,
+            )
+        )
+
+
+
+def test_spectral_flatness_loss_backpropagates() -> None:
+    loss_function = (
+        make_test_spectral_flatness_loss()
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        2048,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        2048,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
+
+
+
+def test_spectral_flatness_rejects_bands_with_too_few_bins() -> None:
+    with pytest.raises(
+        ValueError,
+        match="contains only",
+    ):
+        SubBandSpectralFlatnessLoss(
+            sample_rate=44100,
+            config=(
+                SpectralFlatnessLossConfig(
+                    enabled=True,
+                    fft_size=128,
+                    hop_size=32,
+                    win_length=128,
+                    band_edges=(
+                        27.5,
+                        50.0,
+                        22050.0,
+                    ),
+                    minimum_bins_per_band=4,
+                )
+            ),
+        )
 
 
