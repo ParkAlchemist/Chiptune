@@ -11,3 +11,4 @@ tokenizers
 matplotlib
 scipy
 torchvision
+nnaudio

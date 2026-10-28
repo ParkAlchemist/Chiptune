@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
     VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig, \
-    BandPowerLossConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig
+    BandPowerLossConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig, CQTConsistencyLossConfig, CQTAnalysisConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -146,6 +146,26 @@ def build_dc_offset_loss_config(
     )
 
 
+def build_cqt_consistency_loss_config(
+    experiment: VocoderExperimentConfig,
+) -> CQTConsistencyLossConfig:
+    source = experiment.loss.cqt
+    data = experiment.data
+
+    return CQTConsistencyLossConfig(
+        enabled=source.enabled,
+        eps=source.eps,
+        distance=source.distance,
+        analysis=CQTAnalysisConfig(
+            sample_rate=data.sample_rate,
+            hop_length=data.hop_length,
+            fmin=data.fmin,
+            number_of_bins=data.cqt_bins,
+            bins_per_octave=data.bins_per_octave,
+        )
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -161,6 +181,7 @@ def build_loss_config(
         lambda_band_power=source.lambda_band_power,
         lambda_spectral_flatness=source.lambda_spectral_flatness,
         lambda_dc_offset=source.lambda_dc_offset,
+        lambda_cqt=source.lambda_cqt,
         mrstft=build_mrstft_config(experiment),
         temporal_gradient=build_temporal_gradient_config(experiment),
         feature_matching=build_feature_matching_config(experiment),
@@ -168,6 +189,7 @@ def build_loss_config(
         band_power=build_band_power_loss_config(experiment),
         spectral_flatness=build_spectral_flatness_loss_config(experiment),
         dc_offset=build_dc_offset_loss_config(experiment),
+        cqt=build_cqt_consistency_loss_config(experiment),
     )
 
 

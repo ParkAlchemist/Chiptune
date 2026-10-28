@@ -11,17 +11,23 @@ from src.losses.vocoder_losses import (
     VocoderLossConfig,
     VocoderLossBundle,
     compute_vocoder_discriminator_loss,
-    compute_vocoder_generator_loss, feature_matching_loss, MultiScaleTemporalGradientLoss, MultiResolutionSTFTLoss,
-    generator_loss_contribution_metrics, VocoderGeneratorLossOutput, make_weighted_loss_component,
-    generator_loss_metrics, mean_enabled_families, family_balanced_generator_adversarial_loss,
-    family_balanced_feature_matching_loss, family_balanced_discriminator_loss, FamilyLossOutput,
-    FamilyDiscriminatorLossOutput, discriminator_loss_metrics, MultiScaleRMSEnvelopeLoss,
-    build_log_frequency_filterbank, MultiResolutionBandPowerLoss, SingleResolutionSTFTLoss, log_spectral_flatness,
-    SubBandSpectralFlatnessLoss, MultiScaleSlewEnvelopeLoss, MultiScaleDCOffsetLoss,
-)
+    compute_vocoder_generator_loss, family_balanced_discriminator_loss, FamilyDiscriminatorLossOutput,
+    VocoderGeneratorLossOutput, make_weighted_loss_component, )
+from src.losses.vocoder.metrics import generator_loss_metrics, discriminator_loss_metrics, \
+    generator_loss_contribution_metrics
+from src.losses.vocoder.adversarial_loss import family_balanced_generator_adversarial_loss
+from src.losses.vocoder.feature_matching_loss import FamilyLossOutput, mean_enabled_families, \
+    family_balanced_feature_matching_loss, feature_matching_loss
+from src.losses.vocoder.dc_offset_loss import MultiScaleDCOffsetLoss
+from src.losses.vocoder.temporal_gradient_loss import MultiScaleTemporalGradientLoss, MultiScaleSlewEnvelopeLoss
+from src.losses.vocoder.spectral_flatness_loss import log_spectral_flatness, SubBandSpectralFlatnessLoss
+from src.losses.vocoder.band_power_loss import build_log_frequency_filterbank, MultiResolutionBandPowerLoss
+from src.losses.vocoder.rms_envelope_loss import MultiScaleRMSEnvelopeLoss
+from src.losses.vocoder.mrstft_loss import SingleResolutionSTFTLoss, MultiResolutionSTFTLoss
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
-    assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent, make_test_spectral_flatness_loss
+    assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent, make_test_spectral_flatness_loss, \
+    make_test_cqt_loss
 
 
 def test_mrstft_loss_finite():
@@ -467,6 +473,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.band_power.weighted
         + output.spectral_flatness.weighted
         + output.dc_offset.weighted
+        + output.cqt_consistency.weighted
     )
 
     assert torch.allclose(
@@ -552,7 +559,7 @@ def test_generator_group_totals() -> None:
 
     assert torch.allclose(
         output.time_frequency_total,
-        output.mrstft.weighted,
+        output.mrstft.weighted + output.cqt_consistency.weighted,
     )
 
     assert torch.allclose(
@@ -2686,5 +2693,184 @@ def test_dc_offset_loss_backpropagates() -> None:
     ).all()
 
     assert prediction.grad.abs().sum() > 0
+
+
+def test_cqt_loss_is_zero_for_exact_match() -> None:
+    loss_function = make_test_cqt_loss()
+
+    waveform = torch.randn(
+        2,
+        1,
+        4096,
+    )
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+
+def test_cqt_loss_detects_amplitude_mismatch() -> None:
+    loss_function = make_test_cqt_loss()
+
+    target = torch.randn(
+        2,
+        1,
+        4096,
+    )
+
+    prediction = 0.5 * target
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() > 0.0
+
+
+def test_cqt_loss_is_loss_phase_sensitive_than_waveform_l1() -> None:
+    loss_function = make_test_cqt_loss()
+
+    time = torch.arange(
+        4096,
+        dtype=torch.float32,
+    )
+
+    target = torch.sin(2.0*torch.pi * 440.0*time / 8_000.0).reshape(1, 1, -1)
+
+    prediction = torch.roll(
+        target,
+        shifts=4,
+        dims=-1,
+    )
+
+    cqt_loss = loss_function(
+        prediction,
+        target,
+    ).total
+
+    waveform_loss = F.l1_loss(
+        prediction,
+        target,
+    )
+
+    assert cqt_loss < waveform_loss
+
+
+def test_cqt_loss_backpropagates_only_to_prediction() -> None:
+    loss_function = make_test_cqt_loss()
+
+    prediction = torch.randn(
+        2,
+        1,
+        4096,
+        requires_grad=True,
+    )
+
+    target = torch.randn(
+        2,
+        1,
+        4096,
+        requires_grad=True,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction.grad is not None
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+    assert prediction.grad.abs().sum() > 0
+
+    assert target.grad is None
+
+
+def test_cqt_loss_has_no_trainable_parameters() -> None:
+    loss_function = make_test_cqt_loss()
+
+    trainable = [
+        parameter
+        for parameter
+        in loss_function.parameters()
+        if parameter.requires_grad
+    ]
+
+    assert trainable == []
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA is required.",
+)
+def test_cqt_loss_backpropagates_on_cuda() -> None:
+    loss_function = make_test_cqt_loss(
+        device="cuda"
+    )
+
+    prediction = torch.randn(
+        2,
+        1,
+        4096,
+        device="cuda",
+        dtype=torch.float16,
+        requires_grad=True,
+    )
+
+    target = torch.randn_like(
+        prediction
+    )
+
+    with torch.amp.autocast(
+        device_type="cuda",
+        dtype=torch.float16,
+    ):
+        output = loss_function(
+            prediction,
+            target,
+        )
+
+    output.total.backward()
+
+    assert output.total.dtype == torch.float32
+    assert prediction.grad is not None
+    assert torch.isfinite(
+        prediction.grad
+    ).all()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA is required.",
+)
+def test_cqt_loss_moves_internal_transform_to_cuda() -> None:
+    loss_function = make_test_cqt_loss(
+        device="cuda"
+    )
+
+    prediction = torch.randn(
+        1,
+        1,
+        4096,
+        device="cuda",
+    )
+
+    output = loss_function(
+        prediction,
+        prediction,
+    )
+
+    assert output.total.is_cuda
 
 

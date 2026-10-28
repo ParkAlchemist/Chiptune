@@ -8,19 +8,21 @@ from src.config.vocoder_config import (
     FeatureMatchingLossConfig,
     MRSTFTConfig,
     TemporalGradientLossConfig,
-    VocoderLossConfig, SpectralFlatnessLossConfig,
+    VocoderLossConfig, SpectralFlatnessLossConfig, CQTAnalysisConfig, CQTConsistencyLossConfig,
 )
-from src.losses.vocoder_losses import (
-    MultiResolutionSTFTLossOutput,
-    STFTResolutionLossOutput,
-    VocoderGeneratorLossOutput,
-    WeightedLossComponent,
-    make_weighted_loss_component, family_balanced_generator_adversarial_loss, family_balanced_feature_matching_loss,
-    FamilyDiscriminatorLossOutput, FamilyLossOutput, MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput,
-    RMSEnvelopeScaleLossOutput, MultiResolutionBandPowerLossOutput, SubBandSpectralFlatnessLossOutput,
-    SubBandSpectralFlatnessLoss, SpectralFlatnessBandLossOutput, MultiScaleTemporalGradientLoss,
-    MultiScaleSlewEnvelopeLossOutput, MultiScaleDCOffsetLossOutput, DCOffsetScaleLossOutput,
-)
+from src.losses.vocoder.cqt_consistency_loss import CQTLogMagnitudeLoss, CQTConsistencyLossOutput
+from src.losses.vocoder_losses import WeightedLossComponent, FamilyDiscriminatorLossOutput, VocoderGeneratorLossOutput, \
+    make_weighted_loss_component
+from src.losses.vocoder.adversarial_loss import family_balanced_generator_adversarial_loss
+from src.losses.vocoder.feature_matching_loss import FamilyLossOutput, family_balanced_feature_matching_loss
+from src.losses.vocoder.dc_offset_loss import DCOffsetScaleLossOutput, MultiScaleDCOffsetLossOutput
+from src.losses.vocoder.temporal_gradient_loss import MultiScaleSlewEnvelopeLossOutput, MultiScaleTemporalGradientLoss
+from src.losses.vocoder.spectral_flatness_loss import SpectralFlatnessBandLossOutput, SubBandSpectralFlatnessLossOutput, \
+    SubBandSpectralFlatnessLoss
+from src.losses.vocoder.band_power_loss import MultiResolutionBandPowerLossOutput
+from src.losses.vocoder.rms_envelope_loss import RMSEnvelopeScaleLossOutput, MultiScaleRMSEnvelopeLossOutput, \
+    MultiScaleRMSEnvelopeLoss
+from src.losses.vocoder.mrstft_loss import STFTResolutionLossOutput, MultiResolutionSTFTLossOutput
 
 
 def scalar_tensor(
@@ -323,6 +325,59 @@ def make_test_dc_offset_output(
     )
 
 
+def make_test_cqt_analysis_config(
+    *,
+    sample_rate: int = 8_000,
+    hop_length: int = 32,
+    fmin: float = 62.5,
+    number_of_bins: int = 36,
+    bins_per_octave: int = 12,
+    filter_scale: float = 1.0,
+    norm: int = 1,
+) -> CQTAnalysisConfig:
+    return CQTAnalysisConfig(
+        sample_rate=sample_rate,
+        hop_length=hop_length,
+        fmin=fmin,
+        number_of_bins=number_of_bins,
+        bins_per_octave=bins_per_octave,
+        filter_scale=filter_scale,
+        norm=norm,
+        window="hann",
+        center=True,
+        pad_mode="reflect",
+    )
+
+
+def make_test_cqt_loss_config(
+    *,
+    enabled: bool = True,
+    eps: float = 1e-7,
+) -> CQTConsistencyLossConfig:
+    return CQTConsistencyLossConfig(
+        enabled=enabled,
+        eps=eps,
+        distance="log_magnitude_l1",
+        analysis=make_test_cqt_analysis_config(),
+    )
+
+
+def make_test_cqt_loss(
+    *,
+    device: torch.device | str = "cpu",
+    **analysis_overrides,
+) -> CQTLogMagnitudeLoss:
+
+    loss_config = (
+        make_test_cqt_loss_config()
+    )
+    return CQTLogMagnitudeLoss(
+        loss_config=loss_config,
+    ).to(
+        torch.device(device)
+    )
+
+
 def make_test_weighted_component(
     *,
     raw: float,
@@ -383,6 +438,9 @@ def make_test_generator_loss_output(
         MultiScaleDCOffsetLossOutput
         | None
     ) = None,
+    cqt_consistency_raw: float = 2.0,
+    cqt_consistency_weight: float = 1.0,
+    cqt_consistency_output: CQTConsistencyLossOutput | None = None,
     device: torch.device | str = "cpu",
 ) -> VocoderGeneratorLossOutput:
     adversarial = make_test_weighted_component(
@@ -441,6 +499,12 @@ def make_test_generator_loss_output(
         device=device,
     )
 
+    cqt_consistency = make_test_weighted_component(
+        raw=cqt_consistency_raw,
+        weight=cqt_consistency_weight,
+        device=device,
+    )
+
     if adversarial_families is None:
         adversarial_families = {
             "mpd": scalar_tensor(
@@ -472,6 +536,7 @@ def make_test_generator_loss_output(
         + band_power.weighted
         + spectral_flatness.weighted
         + dc_offset.weighted
+        + cqt_consistency.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -489,6 +554,7 @@ def make_test_generator_loss_output(
         band_power=band_power,
         spectral_flatness=spectral_flatness,
         dc_offset=dc_offset,
+        cqt_consistency=cqt_consistency,
         adversarial_families=(
             adversarial_families
         ),
@@ -501,6 +567,7 @@ def make_test_generator_loss_output(
         band_power_output=band_power_output,
         spectral_flatness_output=spectral_flatness_output,
         dc_offset_output=dc_offset_output,
+        cqt_consistency_output=cqt_consistency_output,
     )
 
 

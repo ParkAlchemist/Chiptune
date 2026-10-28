@@ -217,6 +217,28 @@ class DCOffsetLossConfig:
 
     hop_ratio: int = 4
 
+@dataclass(frozen=True)
+class CQTAnalysisConfig:
+    sample_rate: int = 8000
+    hop_length: int = 32
+    fmin: float = 62.5
+    number_of_bins: int = 36
+    bins_per_octave: int = 12
+
+    filter_scale: float = 1.0
+    norm: int = 1
+    window: str = "hann"
+    center: bool = True
+    pad_mode: str = "reflect"
+
+
+@dataclass
+class CQTConsistencyLossConfig:
+    enabled: bool = False
+    eps: float = 1e-7
+    distance: Literal["log_magnitude_l1"] = "log_magnitude_l1"
+    analysis: CQTAnalysisConfig = field(default_factory=CQTAnalysisConfig)
+
 
 @dataclass
 class VocoderLossConfig:
@@ -229,6 +251,7 @@ class VocoderLossConfig:
     lambda_band_power: float = 0.0
     lambda_spectral_flatness: float = 0.0
     lambda_dc_offset: float = 0.0
+    lambda_cqt: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
@@ -237,6 +260,7 @@ class VocoderLossConfig:
     band_power: BandPowerLossConfig = field(default_factory=BandPowerLossConfig)
     spectral_flatness: SpectralFlatnessLossConfig = field(default_factory=SpectralFlatnessLossConfig)
     dc_offset: DCOffsetLossConfig = field(default_factory=DCOffsetLossConfig)
+    cqt: CQTConsistencyLossConfig = field(default_factory=CQTConsistencyLossConfig)
 
 
 @dataclass

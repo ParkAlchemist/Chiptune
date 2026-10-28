@@ -10,7 +10,8 @@ from src.config.vocoder_config import (
     MRSTFTConfig,
     OptimizerConfig,
     SchedulerConfig,
-    VocoderExperimentConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig,
+    VocoderExperimentConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig, CQTConsistencyLossConfig,
+    CQTAnalysisConfig,
 )
 
 
@@ -912,6 +913,70 @@ def _validate_dc_offset_config(
         )
 
 
+def _validate_cqt_loss_config(
+    config: CQTConsistencyLossConfig,
+    *,
+    errors: list[str],
+) -> None:
+    path = "loss.cqt"
+
+    if config.distance not in {
+        "log_magnitude_l1",
+    }:
+        errors.append(
+            f"{path}.distance has unsupported value "
+            f"{config.distance!r}."
+        )
+
+    if config.eps <= 0.0:
+        errors.append(
+           f"{path}.eps must be positive."
+        )
+
+
+def _validate_cqt_analysis_config(
+    config: CQTAnalysisConfig,
+    *,
+    errors: list[str],
+) -> None:
+    path = "data.cqt"
+
+    if config.sample_rate <= 0:
+        errors.append(
+            f"{path}.sample_rate must be positive."
+        )
+
+    if config.hop_length <= 0:
+        errors.append(
+            f"{path}.hop_length must be positive."
+        )
+
+    if config.fmin <= 0.0:
+        errors.append(
+            f"{path}.fmin must be positive."
+        )
+
+    if config.number_of_bins <= 0:
+        errors.append(
+            f"{path}.number_of_bins must be positive."
+        )
+
+    if config.bins_per_octave <= 0:
+        errors.append(
+            f"{path}.bins_per_octave must be positive."
+        )
+
+    if config.filter_scale <= 0.0:
+        errors.append(
+            f"{path}.filter_scale must be positive."
+        )
+
+    if config.norm not in {1, 2}:
+        errors.append(
+            f"{path}.norm must be 1 or 2."
+        )
+
+
 def _validate_loss_config(
     config: VocoderExperimentConfig,
     errors: list[str],
@@ -930,6 +995,7 @@ def _validate_loss_config(
         "loss.lambda_band_power": loss.lambda_band_power,
         "loss.lambda_spectral_flatness": loss.lambda_spectral_flatness,
         "loss.lambda_dc_offset": loss.lambda_dc_offset,
+        "loss.lambda_cqt": loss.lambda_cqt,
     }
 
     for path, value in weights.items():
@@ -1234,6 +1300,25 @@ def _validate_loss_config(
     dc_offset = loss.dc_offset
     _validate_dc_offset_config(
         dc_offset,
+        errors=errors,
+    )
+
+    if (
+            not loss.cqt.enabled
+            and loss.lambda_cqt != 0.0
+    ):
+        errors.append(
+            "loss.lambda_cqt must be zero when "
+            "loss.cqt.enabled is false."
+        )
+
+    cqt = loss.cqt
+    _validate_cqt_loss_config(
+        cqt,
+        errors=errors,
+    )
+    _validate_cqt_analysis_config(
+        cqt.analysis,
         errors=errors,
     )
 
