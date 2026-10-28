@@ -13,6 +13,8 @@ from src.losses.vocoder.dc_offset_loss import MultiScaleDCOffsetLoss, MultiScale
 from src.losses.vocoder.feature_matching_loss import DISCRIMINATOR_FAMILIES, mean_enabled_families, \
     family_balanced_feature_matching_loss
 from src.losses.vocoder.mrstft_loss import MultiResolutionSTFTLoss, MultiResolutionSTFTLossOutput
+from src.losses.vocoder.rail_occupancy_loss import RailOccupancyScaleLossOutput, MultiScaleRailOccupancyLoss, \
+    MultiScaleRailOccupancyLossOutput
 from src.losses.vocoder.rms_envelope_loss import MultiScaleRMSEnvelopeLoss, MultiScaleRMSEnvelopeLossOutput
 from src.losses.vocoder.spectral_flatness_loss import SubBandSpectralFlatnessLoss, SubBandSpectralFlatnessLossOutput
 from src.losses.vocoder.temporal_gradient_loss import MultiScaleTemporalGradientLoss, \
@@ -101,6 +103,9 @@ class VocoderLossBundle(nn.Module):
         self.cqt_consistency_loss = CQTLogMagnitudeLoss(
             loss_config=config.cqt
         ) if config.cqt.enabled else None
+        self.rail_occupancy_loss = MultiScaleRailOccupancyLoss(
+            config=config.rail_occupancy,
+        ) if config.rail_occupancy.enabled else None
 
 
 def lsgan_discriminator_loss(
@@ -229,6 +234,7 @@ class VocoderGeneratorLossOutput:
     spectral_flatness: WeightedLossComponent
     dc_offset: WeightedLossComponent
     cqt_consistency: WeightedLossComponent
+    rail_occupancy: WeightedLossComponent
 
     mrstft_output: MultiResolutionSTFTLossOutput
     temporal_gradient_output: MultiScaleSlewEnvelopeLossOutput | None
@@ -237,6 +243,7 @@ class VocoderGeneratorLossOutput:
     spectral_flatness_output: SubBandSpectralFlatnessLossOutput | None
     dc_offset_output: MultiScaleDCOffsetLossOutput | None
     cqt_consistency_output: CQTConsistencyLossOutput | None
+    rail_occupancy_output: MultiScaleRailOccupancyLossOutput | None
 
     adversarial_families: dict[str, torch.Tensor]
     feature_matching_families: dict[str, torch.Tensor]
@@ -247,7 +254,7 @@ class VocoderGeneratorLossOutput:
 
     @property
     def time_micro_total(self) -> torch.Tensor:
-        return self.waveform.weighted + self.temporal_gradient.weighted
+        return self.waveform.weighted + self.temporal_gradient.weighted + self.rail_occupancy.weighted
 
     @property
     def time_frequency_total(self) -> torch.Tensor:
@@ -396,6 +403,18 @@ def compute_vocoder_generator_loss(
 
         loss_cqt_raw = cqt_output.total
 
+    if loss_bundle.rail_occupancy_loss is None:
+        rail_occupancy_output = None
+
+        loss_rail_occupancy_raw = fake_audio.new_zeros(())
+    else:
+        rail_occupancy_output = loss_bundle.rail_occupancy_loss(
+            fake_audio,
+            real_audio,
+        )
+
+        loss_rail_occupancy_raw = rail_occupancy_output.total
+
     #------------------Weighted losses-------------------
 
     adversarial = make_weighted_loss_component(
@@ -448,6 +467,11 @@ def compute_vocoder_generator_loss(
         weight=cfg.lambda_cqt,
     )
 
+    rail_occupancy = make_weighted_loss_component(
+        raw=loss_rail_occupancy_raw,
+        weight=cfg.lambda_rail_occupancy,
+    )
+
     total = (
         adversarial.weighted
         + feature_matching.weighted
@@ -459,6 +483,7 @@ def compute_vocoder_generator_loss(
         + spectral_flatness.weighted
         + dc_offset.weighted
         + cqt_consistency.weighted
+        + rail_occupancy.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -473,6 +498,7 @@ def compute_vocoder_generator_loss(
         spectral_flatness=spectral_flatness,
         dc_offset=dc_offset,
         cqt_consistency=cqt_consistency,
+        rail_occupancy=rail_occupancy,
         mrstft_output=mrstft_output,
         temporal_gradient_output=temporal_gradient_output,
         rms_envelope_output=rms_envelope_output,
@@ -482,6 +508,7 @@ def compute_vocoder_generator_loss(
         spectral_flatness_output=spectral_flatness_output,
         dc_offset_output=dc_offset_output,
         cqt_consistency_output=cqt_output,
+        rail_occupancy_output=rail_occupancy_output,
     )
 
 

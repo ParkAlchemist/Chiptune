@@ -11,7 +11,7 @@ from src.config.vocoder_config import (
     OptimizerConfig,
     SchedulerConfig,
     VocoderExperimentConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig, CQTConsistencyLossConfig,
-    CQTAnalysisConfig,
+    CQTAnalysisConfig, RailOccupancyLossConfig,
 )
 
 
@@ -977,6 +977,65 @@ def _validate_cqt_analysis_config(
         )
 
 
+def _validate_rail_occupancy_config(
+    config: RailOccupancyLossConfig,
+    *,
+    errors: list[str],
+) -> None:
+    path = "loss.rail_occupanc*"
+
+    if not config.window_sizes:
+        errors.append(
+            f"{path}.window_sizes must contain "
+            "at least one value."
+        )
+
+    if any(
+        window_size <= 0
+        for window_size
+        in config.window_sizes
+    ):
+        errors.append(
+     *      f"{path}.window_sizes must contain "
+            "only positive values."
+        )
+
+    if (
+        len(set(config.window_sizes))
+        != len(config.window_sizes)
+    ):
+        errors.append(
+            f"{path}.window_sizes must contain "
+            "unique values."
+        )
+
+    if config.hop_ratio <= 0:
+        errors.append(
+            f"{path}.hop_ratio must be positive."
+        )
+
+    if not 0.0 < config.threshold < 1.0:
+        errors.append(
+            f"{path}.threshold must lie strictly "
+            "between zero and one."
+        )
+
+    if config.sharpness <= 0.0:
+        errors.append(
+            f"{path}.sharpness must be positive."
+        )
+
+    if config.activity_floor <= 0.0:
+        errors.append(
+            f"{path}.activity_floor must be positive."
+        )
+
+    if config.eps <= 0.0:
+        errors.append(
+            f"{path}.eps must be positive."
+        )
+
+
 def _validate_loss_config(
     config: VocoderExperimentConfig,
     errors: list[str],
@@ -996,6 +1055,7 @@ def _validate_loss_config(
         "loss.lambda_spectral_flatness": loss.lambda_spectral_flatness,
         "loss.lambda_dc_offset": loss.lambda_dc_offset,
         "loss.lambda_cqt": loss.lambda_cqt,
+        "loss.lambda_rail_occupancy": loss.lambda_rail_occupancy,
     }
 
     for path, value in weights.items():
@@ -1321,6 +1381,15 @@ def _validate_loss_config(
         cqt.analysis,
         errors=errors,
     )
+
+    if (
+            not loss.rail_occupancy.enabled
+            and loss.lambda_rail_occupancy != 0.0
+    ):
+        errors.append(
+        "loss.lambda_rail_occupancy must be zero "
+        "when loss.rail_occupancy.enabled is false."
+        )
 
 
 def _validate_optimizer_config(

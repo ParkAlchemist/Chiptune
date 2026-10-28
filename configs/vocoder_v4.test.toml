@@ -149,6 +149,7 @@ lambda_band_power = 0.2
 lambda_spectral_flatness = 0.0
 lambda_dc_offset = 0.0
 lambda_cqt = 0.0
+lambda_rail_occupancy = 0.0
 
 [loss.mrstft]
 fft_sizes = [128, 256, 512, 1024, 2048]
@@ -224,6 +225,15 @@ eps = 1e-8
 enabled = true
 distance = "log_magnitude_l1"
 eps = 1e-7
+
+[loss.rail_occupancy]
+enabled = true
+window_sizes = [32, 128, 256]
+hop_ratio = 4
+threshold = 0.8
+sharpness = 20.0
+activity_floor = 1e-2
+eps = 1e-8
 
 [optimizer.generator]
 name = "adamw"

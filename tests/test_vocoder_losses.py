@@ -27,7 +27,7 @@ from src.losses.vocoder.mrstft_loss import SingleResolutionSTFTLoss, MultiResolu
 from tests.helpers.vocoder_loss_helpers import make_test_generator_loss_output, make_zero_mrstft_output, \
     make_test_loss_config, make_multi_family_discriminator_outputs, assert_scalar_tensor, make_discriminator_family, \
     assert_family_loss_output_consistent, assert_family_discriminator_loss_consistent, make_test_spectral_flatness_loss, \
-    make_test_cqt_loss
+    make_test_cqt_loss, make_test_rail_occupancy_loss
 
 
 def test_mrstft_loss_finite():
@@ -474,6 +474,7 @@ def test_generator_total_matches_weighted_components() -> None:
         + output.spectral_flatness.weighted
         + output.dc_offset.weighted
         + output.cqt_consistency.weighted
+        + output.rail_occupancy.weighted
     )
 
     assert torch.allclose(
@@ -554,6 +555,7 @@ def test_generator_group_totals() -> None:
         (
             output.waveform.weighted
             + output.temporal_gradient.weighted
+            + output.rail_occupancy.weighted
         ),
     )
 
@@ -2873,4 +2875,269 @@ def test_cqt_loss_moves_internal_transform_to_cuda() -> None:
 
     assert output.total.is_cuda
 
+
+def test_rail_occupancy_is_zero_for_exact_match() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss()
+    )
+
+    waveform = torch.randn(
+        2,
+        1,
+        512,
+    ).tanh()
+
+    output = loss_function(
+        waveform,
+        waveform,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+
+def test_rail_occupancy_is_polarity_invariant() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss()
+    )
+
+    target = torch.ones(
+        1,
+        1,
+        512,
+    )
+
+    target[..., 1::2] = -1.0
+
+    output = loss_function(
+        -target,
+        target,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-6,
+    )
+
+
+def test_rail_occupancy_penalizes_under_amplitude_pulse() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss()
+    )
+
+    target = torch.ones(
+        1,
+        1,
+        512,
+    )
+
+    target[..., 1::2] = -1.0
+
+    prediction = 0.25 * target
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() > 0.0
+
+    assert (
+        output.prediction_occupancy
+        < output.target_occupancy
+    )
+
+
+def triangle_wave(
+    *,
+    length: int,
+    period: int,
+) -> torch.Tensor:
+    phase = (
+        torch.arange(
+            length,
+            dtype=torch.float32,
+        )
+        % period
+    ) / float(period)
+
+    waveform = (
+        4.0
+        * torch.abs(
+            phase - 0.5
+        )
+        - 1.0
+    )
+
+    return waveform.reshape(
+        1,
+        1,
+        -1,
+    )
+
+
+def test_square_has_greater_rail_occupancy_than_triangle() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss(
+            window_sizes=(64,),
+            hop_ratio=1,
+        )
+    )
+
+    square = torch.ones(
+        1,
+        1,
+        512,
+    )
+
+    square[..., 32::64] = -1.0
+
+    # Prefer constructing a proper periodic square helper.
+    square = torch.sign(
+        torch.sin(
+            2.0
+            * torch.pi
+            * torch.arange(512)
+            / 64.0
+        )
+    ).reshape(1, 1, -1)
+
+    triangle = triangle_wave(
+        length=512,
+        period=64,
+    )
+
+    square_output = loss_function(
+        square,
+        square,
+    )
+
+    triangle_output = loss_function(
+        triangle,
+        triangle,
+    )
+
+    assert (
+        square_output.target_occupancy
+        > triangle_output.target_occupancy
+    )
+
+
+def test_rail_occupancy_ignores_silent_target() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss()
+    )
+
+    target = torch.zeros(
+        2,
+        1,
+        512,
+    )
+
+    prediction = torch.randn_like(
+        target
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert torch.isfinite(output.total)
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-7,
+    )
+
+    for scale in output.scales:
+        assert (
+            scale.activity_fraction.item()
+            == pytest.approx(
+                0.0,
+                abs=1e-7,
+            )
+        )
+
+
+def test_rail_occupancy_is_phase_relaxed() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss(
+            window_sizes=(64, 128),
+            hop_ratio=1,
+        )
+    )
+
+    target = torch.ones(
+        1,
+        1,
+        512,
+    )
+
+    target[..., 16::32] = -1.0
+
+    prediction = torch.roll(
+        target,
+        shifts=4,
+        dims=-1,
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    assert output.total.item() == pytest.approx(
+        0.0,
+        abs=1e-5,
+    )
+
+
+def test_rail_occupancy_backpropagates() -> None:
+    loss_function = (
+        make_test_rail_occupancy_loss()
+    )
+
+    prediction_logits = torch.randn(
+        2,
+        1,
+        512,
+        requires_grad=True,
+    )
+
+    prediction = torch.tanh(
+        prediction_logits
+    )
+
+    target = torch.tanh(
+        torch.randn(
+            2,
+            1,
+            512,
+        )
+    )
+
+    output = loss_function(
+        prediction,
+        target,
+    )
+
+    output.total.backward()
+
+    assert prediction_logits.grad is not None
+
+    assert torch.isfinite(
+        prediction_logits.grad
+    ).all()
+
+    assert (
+        prediction_logits
+        .grad
+        .abs()
+        .sum()
+        .item()
+        > 0.0
+    )
 

@@ -241,6 +241,25 @@ class CQTConsistencyLossConfig:
 
 
 @dataclass
+class RailOccupancyLossConfig:
+    enabled: bool = False
+
+    window_sizes: tuple[int, ...] = (
+        32,
+        128,
+        256,
+    )
+
+    hop_ratio: int = 4
+
+    threshold: float = 0.8
+    sharpness: float = 20.0
+
+    activity_floor: float = 1e-2
+    eps: float = 1e-8
+
+
+@dataclass
 class VocoderLossConfig:
     lambda_adversarial: float = 1.0
     lambda_feature_matching: float = 2.0
@@ -252,6 +271,7 @@ class VocoderLossConfig:
     lambda_spectral_flatness: float = 0.0
     lambda_dc_offset: float = 0.0
     lambda_cqt: float = 0.0
+    lambda_rail_occupancy: float = 0.0
 
     mrstft: MRSTFTConfig = field(default_factory=MRSTFTConfig)
     feature_matching: FeatureMatchingLossConfig = field(default_factory=FeatureMatchingLossConfig)
@@ -261,6 +281,7 @@ class VocoderLossConfig:
     spectral_flatness: SpectralFlatnessLossConfig = field(default_factory=SpectralFlatnessLossConfig)
     dc_offset: DCOffsetLossConfig = field(default_factory=DCOffsetLossConfig)
     cqt: CQTConsistencyLossConfig = field(default_factory=CQTConsistencyLossConfig)
+    rail_occupancy: RailOccupancyLossConfig = field(default_factory=RailOccupancyLossConfig)
 
 
 @dataclass

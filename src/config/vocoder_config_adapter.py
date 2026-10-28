@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from src.config.vocoder_config import VocoderExperimentConfig, VocoderGeneratorModelConfig, MRSTFTConfig, \
     VocoderLossConfig, TemporalGradientLossConfig, FeatureMatchingLossConfig, RMSEnvelopeLossConfig, \
-    BandPowerLossConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig, CQTConsistencyLossConfig, CQTAnalysisConfig
+    BandPowerLossConfig, SpectralFlatnessLossConfig, DCOffsetLossConfig, CQTConsistencyLossConfig, CQTAnalysisConfig, \
+    RailOccupancyLossConfig
 
 from src.models.vocoder_discriminators import (
     MultiPeriodDiscriminatorConfig as ModelMPDConfig,
@@ -166,6 +167,24 @@ def build_cqt_consistency_loss_config(
     )
 
 
+def build_rail_occupancy_loss_config(
+    experiment: VocoderExperimentConfig,
+) -> RailOccupancyLossConfig:
+    source = experiment.loss.rail_occupancy
+
+    return RailOccupancyLossConfig(
+        enabled=source.enabled,
+        window_sizes=tuple(
+            source.window_sizes
+        ),
+        hop_ratio=source.hop_ratio,
+        threshold=source.threshold,
+        sharpness=source.sharpness,
+        activity_floor=source.activity_floor,
+        eps=source.eps,
+    )
+
+
 def build_loss_config(
     experiment: VocoderExperimentConfig,
 ) -> VocoderLossConfig:
@@ -182,6 +201,7 @@ def build_loss_config(
         lambda_spectral_flatness=source.lambda_spectral_flatness,
         lambda_dc_offset=source.lambda_dc_offset,
         lambda_cqt=source.lambda_cqt,
+        lambda_rail_occupancy=source.lambda_rail_occupancy,
         mrstft=build_mrstft_config(experiment),
         temporal_gradient=build_temporal_gradient_config(experiment),
         feature_matching=build_feature_matching_config(experiment),
@@ -190,6 +210,7 @@ def build_loss_config(
         spectral_flatness=build_spectral_flatness_loss_config(experiment),
         dc_offset=build_dc_offset_loss_config(experiment),
         cqt=build_cqt_consistency_loss_config(experiment),
+        rail_occupancy=build_rail_occupancy_loss_config(experiment),
     )
 
 

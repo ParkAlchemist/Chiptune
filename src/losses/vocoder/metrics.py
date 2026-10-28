@@ -43,6 +43,9 @@ def generator_loss_metrics(
         "loss_g_cqt_consistency": float(
             output.cqt_consistency.raw.detach().cpu()
         ),
+        "loss_g_rail_occupancy": float(
+            output.rail_occupancy.raw.detach().cpu()
+        ),
 
         "loss_g_weighted/adversarial": float(
             output.adversarial.weighted.detach().cpu()
@@ -73,6 +76,9 @@ def generator_loss_metrics(
         ),
         "loss_g_weighted/cqt_consistency": float(
             output.cqt_consistency.weighted.detach().cpu()
+        ),
+        "loss_g_weighted/rail_occupancy": float(
+            output.rail_occupancy.weighted.detach().cpu()
         ),
 
         "loss_g_group/learned": float(
@@ -343,6 +349,70 @@ def generator_loss_metrics(
             cqt_output.target_log_magnitude_mean.detach().cpu()
         )
 
+    rail_output = output.rail_occupancy_output
+
+    if rail_output is not None:
+        metrics[
+            "rail_occupancy/target_mean"
+        ] = float(
+            rail_output.target_occupancy
+            .detach()
+        .cpu()
+        )
+
+        metrics[
+            "rail_occupancy/prediction_mean"
+        ] = float(
+            rail_output.prediction_occupancy
+            .detach()
+            .cpu()
+        )
+
+        for scale in rail_output.scales:
+            prefix = (
+                "loss_g_rail_occupancy_scale_"
+                f"window_{scale.window_size}"
+                f"_hop_{scale.hop_size}"
+            )
+
+            metrics[
+                f"{prefix}/loss"
+            ] = float(
+                scale.loss.detach().cpu()
+            )
+
+            metrics[
+                f"{prefix}/target"
+            ] = float(
+                scale.target_occupancy
+                .detach()
+                .cpu()
+            )
+
+            metrics[
+                f"{prefix}/prediction"
+            ] = float(
+                scale.prediction_occupancy
+                .detach()
+                .cpu()
+            )
+
+            metrics[
+                f"{prefix}/target_peak"
+            ] = float(
+                scale.target_peak_mean
+                .detach()
+                .cpu()
+            )
+
+            metrics[
+                f"{prefix}/activity"
+            ] = float(
+                scale.activity_fraction
+                .detach()
+                .cpu()
+            )
+
     return metrics
 
 
@@ -423,6 +493,9 @@ def generator_loss_contribution_metrics(
         "cqt_consistency": (
             output.cqt_consistency.weighted
         ),
+        "rail_occupancy": (
+            output.rail_occupancy.weighted
+        )
     }
 
     denominator = torch.stack(

@@ -8,9 +8,11 @@ from src.config.vocoder_config import (
     FeatureMatchingLossConfig,
     MRSTFTConfig,
     TemporalGradientLossConfig,
-    VocoderLossConfig, SpectralFlatnessLossConfig, CQTAnalysisConfig, CQTConsistencyLossConfig,
+    VocoderLossConfig, SpectralFlatnessLossConfig, CQTAnalysisConfig, CQTConsistencyLossConfig, RailOccupancyLossConfig,
 )
 from src.losses.vocoder.cqt_consistency_loss import CQTLogMagnitudeLoss, CQTConsistencyLossOutput
+from src.losses.vocoder.rail_occupancy_loss import MultiScaleRailOccupancyLoss, MultiScaleRailOccupancyLossOutput, \
+    RailOccupancyScaleLossOutput
 from src.losses.vocoder_losses import WeightedLossComponent, FamilyDiscriminatorLossOutput, VocoderGeneratorLossOutput, \
     make_weighted_loss_component
 from src.losses.vocoder.adversarial_loss import family_balanced_generator_adversarial_loss
@@ -378,6 +380,126 @@ def make_test_cqt_loss(
     )
 
 
+def make_test_rail_occupancy_config(
+    *,
+    enabled: bool = True,
+    window_sizes: tuple[int, ...] = (
+        16,
+        64,
+    ),
+    hop_ratio: int = 4,
+    threshold: float = 0.8,
+    sharpness: float = 20.0,
+    activity_floor: float = 1e-2,
+    eps: float = 1e-8,
+) -> RailOccupancyLossConfig:
+    return RailOccupancyLossConfig(
+        enabled=enabled,
+        window_sizes=window_sizes,
+        hop_ratio=hop_ratio,
+        threshold=threshold,
+        sharpness=sharpness,
+        activity_floor=activity_floor,
+        eps=eps,
+    )
+
+
+def make_test_rail_occupancy_loss(
+    **config_overrides,
+) -> MultiScaleRailOccupancyLoss:
+    return MultiScaleRailOccupancyLoss(
+        make_test_rail_occupancy_config(
+            **config_overrides
+        )
+    )
+
+
+def make_test_rail_occupancy_output(
+    *,
+    device: torch.device | str = "cpu",
+) -> MultiScaleRailOccupancyLossOutput:
+    scales = (
+        RailOccupancyScaleLossOutput(
+            window_size=16,
+            hop_size=4,
+            loss=scalar_tensor(
+                0.1,
+                device=device,
+            ),
+            target_occupancy=scalar_tensor(
+                0.8,
+                device=device,
+            ),
+            prediction_occupancy=scalar_tensor(
+                0.7,
+                device=device,
+            ),
+            target_peak_mean=scalar_tensor(
+                0.9,
+                device=device,
+            ),
+            activity_fraction=scalar_tensor(
+                0.95,
+                device=device,
+            ),
+        ),
+        RailOccupancyScaleLossOutput(
+            window_size=64,
+            hop_size=16,
+            loss=scalar_tensor(
+                0.2,
+                device=device,
+            ),
+            target_occupancy=scalar_tensor(
+                0.75,
+                device=device,
+            ),
+            prediction_occupancy=scalar_tensor(
+                0.6,
+                device=device,
+            ),
+            target_peak_mean=scalar_tensor(
+                0.85,
+                device=device,
+            ),
+            activity_fraction=scalar_tensor(
+                0.9,
+                device=device,
+            ),
+        ),
+    )
+
+    total = torch.stack(
+        [
+            scale.loss
+            for scale in scales
+        ]
+    ).mean()
+
+    target_occupancy = torch.stack(
+        [
+            scale.target_occupancy
+            for scale in scales
+        ]
+    ).mean()
+
+    prediction_occupancy = torch.stack(
+        [
+            scale.prediction_occupancy
+            for scale in scales
+        ]
+    ).mean()
+
+    return MultiScaleRailOccupancyLossOutput(
+        total=total,
+        target_occupancy=target_occupancy,
+        prediction_occupancy=(
+            prediction_occupancy
+        ),
+        scales=scales,
+    )
+
+
 def make_test_weighted_component(
     *,
     raw: float,
@@ -441,6 +563,9 @@ def make_test_generator_loss_output(
     cqt_consistency_raw: float = 2.0,
     cqt_consistency_weight: float = 1.0,
     cqt_consistency_output: CQTConsistencyLossOutput | None = None,
+    rail_occupancy_raw: float = 2.0,
+    rail_occupancy_weight: float = 1.0,
+    rail_occupancy_output: MultiScaleRailOccupancyLossOutput | None = None,
     device: torch.device | str = "cpu",
 ) -> VocoderGeneratorLossOutput:
     adversarial = make_test_weighted_component(
@@ -505,6 +630,12 @@ def make_test_generator_loss_output(
         device=device,
     )
 
+    rail_occupancy = make_test_weighted_component(
+        raw=rail_occupancy_raw,
+        weight=rail_occupancy_weight,
+        device=device,
+    )
+
     if adversarial_families is None:
         adversarial_families = {
             "mpd": scalar_tensor(
@@ -537,6 +668,7 @@ def make_test_generator_loss_output(
         + spectral_flatness.weighted
         + dc_offset.weighted
         + cqt_consistency.weighted
+        + rail_occupancy.weighted
     )
 
     return VocoderGeneratorLossOutput(
@@ -555,6 +687,7 @@ def make_test_generator_loss_output(
         spectral_flatness=spectral_flatness,
         dc_offset=dc_offset,
         cqt_consistency=cqt_consistency,
+        rail_occupancy=rail_occupancy,
         adversarial_families=(
             adversarial_families
         ),
@@ -568,6 +701,7 @@ def make_test_generator_loss_output(
         spectral_flatness_output=spectral_flatness_output,
         dc_offset_output=dc_offset_output,
         cqt_consistency_output=cqt_consistency_output,
+        rail_occupancy_output=rail_occupancy_output,
     )
 
 
